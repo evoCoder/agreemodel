@@ -62,7 +62,19 @@ class NodeCfg:
     publish_period_s: float = 0.25
     picture_period_s: float = 0.25
     gossip_period_s: float = 0.2
-    request_timeout_s: float = 0.6
+    request_timeout_s: float = 0.6  # c0: фиксированный срок ожидания ответа на запрос
+    rto_init_s: float = 0.3  # c1: срок ожидания до первых замеров RTT
+    rto_min_s: float = 0.12  # c1: границы адаптивного срока ожидания (RFC 6298)
+    rto_max_s: float = 1.0
+    rto_backoff: float = 1.5  # c1: множитель срока при повторе (потери в радиоканале
+    #                           случайные, а не от перегрузки — удвоение TCP избыточно)
+    request_fanout: int = 1  # у скольких соседей запрашивать недостающее (первая попытка)
+    retry_fanout: int = 2  # у скольких соседей — повтор
+    busy_recent_s: float = 0.05  # эфир «занят», если передача шла в последние столько секунд
+    response_window_s: float = 0.01  # окно объединения запросов в одну рассылку дельты
+    discover_s: float = 0.1  # сбор векторов новых соседей перед запросом (один ответчик)
+    push_own: bool = True  # сразу рассылать свои новые записи (pull — только для досылки)
+    protocol: str = "c1"  # c1 — текущий обмен; c0 — обмен цикла 0 (для сравнения)
     track_lost_s: float = 4.0
     confirm_hits: int = 3
     gate_d2: float = 13.8  # χ²₂(0,999)
@@ -96,6 +108,7 @@ class NetCfg:
     loss: float = 0.05
     bandwidth_kbps: float = 500.0
     range_m: float = 3000.0
+    medium: str = "per_node"  # per_node — свой канал у борта; shared — общая радиосреда
     partition: list[PartitionCfg] = field(default_factory=list)
 
 

@@ -70,6 +70,7 @@ class Simulation:
         self.agree_samples = 0
         self.agree_hits = 0
         self.settle_conv_s: float | None = None
+        self.c1 = sc.node.protocol == "c1"
 
     def _spawn(self, i: int) -> None:
         if i not in self.world.uavs:
@@ -84,6 +85,9 @@ class Simulation:
 
     # ------------------------------------------------------------------ обработка
     def _deliver(self, t_end: float) -> None:
+        if self.c1:
+            self._deliver_c1(t_end)
+            return
         net = self.net
         for m in net.pop_until(t_end):
             node = self.nodes[m.dst]
@@ -98,6 +102,49 @@ class Simulation:
                     net.send(t, m.dst, m.src, "DELTA", delta, delta.size)
             elif m.kind == "DELTA":
                 node.on_delta(m.payload)
+
+    def _emit(self, t: float, i: int, out) -> float | None:
+        if out.dst is None:
+            return self.net.broadcast(t, i, out.kind, out.payload, out.size)
+        return self.net.send(t, i, out.dst, out.kind, out.payload, out.size)
+
+    def _timers(self, t: float) -> None:
+        """Сроки узлов: отправка объединённых ответов и повторные запросы."""
+        lat_max = (self.sc.net.latency_ms + self.sc.net.jitter_ms) / 1e3
+        for i in self.alive():
+            n = self.nodes[i]
+            for origin, f, to, out in n.flush(t):
+                end = self._emit(t, i, out)
+                if end is not None:
+                    n.note_sent(origin, f, to, end + lat_max)
+            if n.hold_due(t) or any(p.deadline <= t + 1e-9 for p in n.req.values()):
+                for out in n.request_due(t, busy=self.net.channel_busy(i, t, self.sc.node.busy_recent_s)):
+                    self._emit(t, i, out)
+
+    def _deliver_c1(self, t_end: float) -> None:
+        """Доставка по времени; сроки узлов срабатывают в свой момент между сообщениями."""
+        net = self.net
+        while True:
+            due = [dl for i in self.alive() if (dl := self.nodes[i].next_timer()) is not None]
+            t_timer = min(due) if due else None
+            t_msg = net._q[0].t_deliver if net._q else None
+            if t_timer is not None and t_timer <= t_end and (t_msg is None or t_timer <= t_msg):
+                self._timers(t_timer)
+                continue
+            if t_msg is None or t_msg > t_end:
+                break
+            m = next(net.pop_until(t_msg), None)
+            if m is None:
+                continue
+            node = self.nodes[m.dst]
+            t = m.t_deliver
+            if m.kind == "DIGEST":
+                for out in node.on_digest_c1(t, m.src, self.nodes[m.src].uid, m.payload):
+                    self._emit(t, m.dst, out)
+            elif m.kind == "REQ":
+                node.on_request_c1(t, m.payload)
+            elif m.kind == "DELTA":
+                node.on_delta_c1(t, m.src, m.payload)
 
     def _event(self, t: float) -> None:
         while self.events and self.events[0].t_s <= t:
@@ -155,11 +202,16 @@ class Simulation:
                     n.next_publish = t1 + sc.node.publish_period_s
                     s = self.sensors[i]
                     n.publish(t_us, s.nav_estimate(self.world.uavs[i]), s.nav_sigma)
+                    if self.c1 and (out := n.push_out()) is not None:
+                        self._emit(t1, i, out)
                 if t1 + 1e-9 >= n.next_gossip:
                     n.next_gossip += sc.node.gossip_period_s
-                    vv = n.store.version_vector()
-                    for j in self.net.neighbours(i, t1):
-                        self.net.send(t1, i, j, "DIGEST", vv, 8 + 10 * len(vv))
+                    if self.c1:
+                        self._emit(t1, i, n.digest_out())
+                    else:
+                        vv = n.store.version_vector()
+                        for j in self.net.neighbours(i, t1):
+                            self.net.send(t1, i, j, "DIGEST", vv, 8 + 10 * len(vv))
             self._deliver(t1)
             for i in alive:
                 n = self.nodes[i]
@@ -271,8 +323,14 @@ class Simulation:
                 "mixed_objects": mixed,
                 "conflicts_marked": pic.n_conflicts,
             },
-            "net": {"mbytes_sent": round(self.net.bytes_sent / 2**20, 2),
-                    "msgs_sent": self.net.msgs_sent, "msgs_lost": self.net.msgs_lost},
+            "net": {"medium": self.sc.net.medium,
+                    "protocol": self.sc.node.protocol,
+                    "mbytes_sent": round(self.net.bytes_sent / 2**20, 2),
+                    # средняя передача одного борта, кбит/с (сравнить с полосой канала)
+                    "kbps_per_uav": round(self.net.bytes_sent * 8 / 1e3 / self.sc.run.duration_s
+                                          / max(1, self.sc.swarm.n_uav), 1),
+                    "msgs_sent": self.net.msgs_sent, "msgs_lost": self.net.msgs_lost,
+                    "deliveries": self.net.deliveries},
         }
 
 

@@ -4,9 +4,14 @@
   подгруппе действующего разделения (борт, не указанный в группах разделения, изолирован);
 * потери — сообщение теряется целиком с вероятностью loss (дельта применяется атомарно,
   частичной доставки нет);
-* полоса — у каждого борта передатчик с маркерным ведром bandwidth_kbps: сообщения
-  уходят по очереди, время передачи = размер / скорость;
+* полоса — bandwidth_kbps; сообщения уходят по очереди, время передачи = размер / скорость.
+  medium = "per_node" — у каждого борта свой канал (модель цикла 0); medium = "shared" —
+  общая радиосреда: одна передача в подгруппе в каждый момент, полоса делится между
+  всеми бортами подгруппы (mesh-модемы на одной частоте);
+* широковещание (broadcast) — одна передача слышна всем доступным соседям, потери у
+  каждого получателя независимы; так передаются векторы версий и дельты;
 * задержка — latency_ms ± jitter_ms после окончания передачи;
+* сообщения одной пары бортов доставляются в порядке отправки (как в радиоканале);
 * сообщение, в момент доставки которого пара уже недоступна, теряется.
 """
 
@@ -38,10 +43,13 @@ class Network:
         self.rng = rng
         self._q: list[Message] = []
         self._seq = 0
-        self._tx_free: dict[int, float] = {}
+        self._tx_free: dict[object, float] = {}
         self.bytes_sent = 0
         self.msgs_sent = 0
         self.msgs_lost = 0
+        self._last: dict[tuple[int, int], float] = {}
+        self._air: dict[object, list[tuple[float, float]]] = {}  # интервалы передач канала
+        self.deliveries = 0  # доставок получателям (широковещание — по каждому)
         self.positions: dict[int, tuple[float, float]] = {}
         self.alive: set[int] = set()
 
@@ -66,20 +74,64 @@ class Network:
     def neighbours(self, i: int, t: float) -> list[int]:
         return [j for j in sorted(self.alive) if self.reachable(i, j, t)]
 
-    def send(self, t: float, src: int, dst: int, kind: str, payload: Any, size: int) -> None:
-        if not self.reachable(src, dst, t):
-            return
-        start = max(t, self._tx_free.get(src, 0.0))
-        tx = size * 8 / (self.cfg.bandwidth_kbps * 1000.0)
-        self._tx_free[src] = start + tx
+    def _channel(self, src: int, t: float) -> object:
+        if self.cfg.medium == "shared":
+            return ("g", self.group_of(src, t))
+        return src
+
+    def _transmit(self, t: float, src: int, size: int) -> float:
+        """Занять канал; вернуть момент окончания передачи."""
+        ch = self._channel(src, t)
+        start = max(t, self._tx_free.get(ch, 0.0))
+        end = start + size * 8 / (self.cfg.bandwidth_kbps * 1000.0)
+        self._tx_free[ch] = end
+        iv = self._air.setdefault(ch, [])
+        iv.append((start, end))
+        if len(iv) > 64:
+            del iv[:32]
         self.bytes_sent += size
         self.msgs_sent += 1
+        return end
+
+    def channel_busy(self, src: int, t: float, recent_s: float = 0.0) -> bool:
+        """Канал борта занят передачей в момент t или был занят в последние recent_s
+        (контроль несущей)."""
+        for a, b in reversed(self._air.get(self._channel(src, t), ())):
+            if a <= t and b > t - recent_s:
+                return True
+        return False
+
+    def tx_backlog(self, src: int, t: float) -> float:
+        """Сколько секунд канал борта ещё занят ранее поставленными передачами."""
+        return max(0.0, self._tx_free.get(self._channel(src, t), 0.0) - t)
+
+    def _enqueue(self, t_end: float, src: int, dst: int, kind: str, payload: Any,
+                 size: int) -> None:
+        self.deliveries += 1
         if self.rng.random() < self.cfg.loss:
             self.msgs_lost += 1
             return
         lat = max(0.0, self.cfg.latency_ms + self.rng.uniform(-1, 1) * self.cfg.jitter_ms) / 1e3
+        t_deliver = max(t_end + lat, self._last.get((src, dst), 0.0))
+        self._last[(src, dst)] = t_deliver
         self._seq += 1
-        heapq.heappush(self._q, Message(start + tx + lat, self._seq, src, dst, kind, payload, size))
+        heapq.heappush(self._q, Message(t_deliver, self._seq, src, dst, kind, payload, size))
+
+    def send(self, t: float, src: int, dst: int, kind: str, payload: Any, size: int) -> float | None:
+        if not self.reachable(src, dst, t):
+            return None
+        end = self._transmit(t, src, size)
+        self._enqueue(end, src, dst, kind, payload, size)
+        return end
+
+    def broadcast(self, t: float, src: int, kind: str, payload: Any, size: int) -> float | None:
+        dsts = self.neighbours(src, t)
+        if not dsts:
+            return None
+        end = self._transmit(t, src, size)
+        for j in dsts:
+            self._enqueue(end, src, j, kind, payload, size)
+        return end
 
     def pop_until(self, t: float):
         while self._q and self._q[0].t_deliver <= t:

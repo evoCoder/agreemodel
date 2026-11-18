@@ -2,6 +2,7 @@
 
     python -m agreemodel run scenarios/base.toml --out runs/base
     python -m agreemodel run scenarios/base.toml --set net.loss=0.2 --set run.seed=11
+    python -m agreemodel series scenarios/base.toml --seeds 1-10 --vary node.protocol=c0,c1 --out runs/s
 """
 
 from __future__ import annotations
@@ -38,7 +39,25 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--out", help="каталог результатов")
     r.add_argument("--set", action="append", default=[], help="переопределение: раздел.параметр=значение")
     r.add_argument("--quiet", action="store_true")
+    sr = sub.add_parser("series", help="серия прогонов по seed и вариантам параметров")
+    sr.add_argument("scenario")
+    sr.add_argument("--seeds", default="1-10", help="например 1-10 или 3,7,11")
+    sr.add_argument("--vary", action="append", default=[],
+                    help="ось вариантов: раздел.параметр=знач1,знач2")
+    sr.add_argument("--set", action="append", default=[], help="постоянное переопределение")
+    sr.add_argument("--jobs", type=int, default=2)
+    sr.add_argument("--out", required=True)
     args = ap.parse_args(argv)
+
+    if args.cmd == "series":
+        from .series import parse_seeds, parse_vary, run_series, save
+        seeds, variants = parse_seeds(args.seeds), parse_vary(args.vary)
+        w0 = time.perf_counter()
+        rows, summary = run_series(args.scenario, seeds, variants, args.set, args.jobs)
+        save(args.out, args.scenario, seeds, variants, args.set, rows, summary)
+        print(json.dumps(summary, ensure_ascii=False, indent=1))
+        print(f"прогонов: {len(rows)}, {time.perf_counter() - w0:.0f} с")
+        return 0
 
     sc = load(args.scenario)
     for expr in args.set:
