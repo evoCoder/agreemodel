@@ -1,0 +1,155 @@
+{
+  "scenario": "scenarios/base.toml",
+  "set": [],
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "totals": {
+    "objects": 483,
+    "truth_detected": 448,
+    "truth_covered": 447,
+    "duplicates": 24,
+    "false_objects": 12,
+    "mixed_objects": 2,
+    "conflicts_marked": 0
+  },
+  "duplicate_rate": 0.054,
+  "per_seed": [
+    {
+      "seed": 1,
+      "objects": 49,
+      "truth_detected": 47,
+      "truth_covered": 47,
+      "duplicates": 2,
+      "false_objects": 0,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 2
+    },
+    {
+      "seed": 2,
+      "objects": 48,
+      "truth_detected": 45,
+      "truth_covered": 45,
+      "duplicates": 2,
+      "false_objects": 1,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 2
+    },
+    {
+      "seed": 3,
+      "objects": 47,
+      "truth_detected": 45,
+      "truth_covered": 45,
+      "duplicates": 2,
+      "false_objects": 0,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 2
+    },
+    {
+      "seed": 4,
+      "objects": 54,
+      "truth_detected": 49,
+      "truth_covered": 49,
+      "duplicates": 5,
+      "false_objects": 0,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 5
+    },
+    {
+      "seed": 5,
+      "objects": 47,
+      "truth_detected": 41,
+      "truth_covered": 41,
+      "duplicates": 3,
+      "false_objects": 3,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 3
+    },
+    {
+      "seed": 6,
+      "objects": 51,
+      "truth_detected": 48,
+      "truth_covered": 48,
+      "duplicates": 1,
+      "false_objects": 2,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 1
+    },
+    {
+      "seed": 7,
+      "objects": 51,
+      "truth_detected": 47,
+      "truth_covered": 46,
+      "duplicates": 5,
+      "false_objects": 0,
+      "mixed_objects": 1,
+      "conflicts_marked": 0,
+      "events": 5
+    },
+    {
+      "seed": 8,
+      "objects": 45,
+      "truth_detected": 42,
+      "truth_covered": 42,
+      "duplicates": 1,
+      "false_objects": 2,
+      "mixed_objects": 1,
+      "conflicts_marked": 0,
+      "events": 1
+    },
+    {
+      "seed": 9,
+      "objects": 41,
+      "truth_detected": 38,
+      "truth_covered": 38,
+      "duplicates": 1,
+      "false_objects": 2,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 1
+    },
+    {
+      "seed": 10,
+      "objects": 50,
+      "truth_detected": 46,
+      "truth_covered": 46,
+      "duplicates": 2,
+      "false_objects": 2,
+      "mixed_objects": 0,
+      "conflicts_marked": 0,
+      "events": 2
+    }
+  ],
+  "missed_merges": 24,
+  "causes": {
+    "own_overlap": 23,
+    "class": 0,
+    "gate_nav": 0,
+    "gate_stale": 1,
+    "gate_other": 0,
+    "cell": 0
+  },
+  "causes_share": {
+    "own_overlap": 0.958,
+    "class": 0.0,
+    "gate_nav": 0.0,
+    "gate_stale": 0.042,
+    "gate_other": 0.0,
+    "cell": 0.0
+  }
+}

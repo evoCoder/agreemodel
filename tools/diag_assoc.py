@@ -88,7 +88,8 @@ class NavLog:
 
 def replay(records: list[Any], cfg: Any, truth_of: dict, nav: NavLog) -> dict[str, Any]:
     """Повтор цикла ассоциации fusion.compute_picture с регистрацией пропущенных слияний."""
-    tracks = [r for r in records if r.key.startswith("trk/")]
+    # «M» — трек объединён бортом-источником с другим своим, в картину не входит (fusion.py)
+    tracks = [r for r in records if r.key.startswith("trk/") and r.data.get("st") != "M"]
     t_ref = max([r.data["t1"] for r in tracks] + [r.t_us for r in records if r.key == "uav"])
     tracks.sort(key=lambda r: (r.data["t0"], r.origin, r.key))
     cell, gate2 = cfg.cell_m, cfg.gate**2

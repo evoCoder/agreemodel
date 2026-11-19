@@ -52,12 +52,25 @@ class Result:
 
 
 class Simulation:
-    def __init__(self, sc: Scenario) -> None:
+    """Прогон сценария.
+
+    Интерфейс для веб-интерфейса и адаптеров (сохраняется между циклами):
+    ``on_sample(sim, t, alive)`` — вызывается в каждый момент выборки показателей;
+    в нём можно читать ``sim.world``, ``sim.nodes[i].picture`` (объекты с ``members``,
+    ``conflict``), ``sim.nodes[i].truth_of``, ``sim.components(alive, t)`` — подгруппы
+    связи. Вызов только читает состояние и на результат модели не влияет.
+    """
+
+    def __init__(self, sc: Scenario, on_sample=None) -> None:
         self.sc = sc
+        self.on_sample = on_sample
+        # генераторы засеваются целыми числами: засев числом с плавающей точкой идёт через
+        # hash(), а он зависит от разрядности платформы (64 бита — Linux/Windows, 32 бита —
+        # Pyodide в браузере), и один seed давал разные прогоны в разных средах
         root = random.Random(sc.run.seed)
-        self.world = World(sc.swarm, sc.objects, random.Random(root.random()))
-        self.net = Network(sc.net, random.Random(root.random()))
-        self._sensor_seed = random.Random(root.random())
+        self.world = World(sc.swarm, sc.objects, random.Random(root.getrandbits(64)))
+        self.net = Network(sc.net, random.Random(root.getrandbits(64)))
+        self._sensor_seed = random.Random(root.getrandbits(64))
         self.nodes: dict[int, Node] = {}
         self.sensors: dict[int, Sensor] = {}
         for i in range(sc.swarm.n_uav):
@@ -70,6 +83,7 @@ class Simulation:
         self.agree_samples = 0
         self.agree_hits = 0
         self.settle_conv_s: float | None = None
+        self.c1 = sc.node.protocol == "c1"
 
     def _spawn(self, i: int) -> None:
         if i not in self.world.uavs:
@@ -77,33 +91,81 @@ class Simulation:
         u = self.world.uavs[i]
         self.nodes[i] = Node(i, u.uid, self.sc.node, self.sc.fusion)
         self.sensors[i] = Sensor(self.sc.sensor, self.sc.nav,
-                                 random.Random(self._sensor_seed.random() + i))
+                                 random.Random((self._sensor_seed.getrandbits(64) << 8) | i))
 
     def alive(self) -> list[int]:
         return [i for i, u in self.world.uavs.items() if u.alive and i in self.nodes]
 
     # ------------------------------------------------------------------ обработка
+    def _emit(self, t: float, i: int, out, on_done=None) -> bool:
+        if out.dst is None:
+            return self.net.broadcast(t, i, out.kind, out.payload, out.size, on_done)
+        return self.net.send(t, i, out.dst, out.kind, out.payload, out.size, on_done)
+
+    def _emit_part(self, t: float, i: int, origin: str, f: int, to: int, out) -> None:
+        n = self.nodes[i]
+        lat_max = (self.sc.net.latency_ms + self.sc.net.jitter_ms) / 1e3
+        entry = n.note_queued(origin, f, to)
+        if not self._emit(t, i, out, on_done=lambda end: n.note_sent(entry, end + lat_max)):
+            entry[2] = t  # некому передавать — не держать
+
+    def _timers(self, t: float) -> None:
+        """Сроки узлов: отправка объединённых ответов и повторные запросы."""
+        for i in self.alive():
+            n = self.nodes[i]
+            for origin, f, to, out in n.flush(t):
+                self._emit_part(t, i, origin, f, to, out)
+            if n.hold_due(t) or any(p.deadline <= t + 1e-9 for p in n.req.values()):
+                busy = self.net.channel_busy(i, t, self.sc.node.busy_recent_s)
+                for out in n.request_due(t, busy=busy):
+                    self._emit(t, i, out)
+
     def _deliver(self, t_end: float) -> None:
+        """События сети и сроки узлов по времени до t_end включительно."""
         net = self.net
-        for m in net.pop_until(t_end):
+        while True:
+            t_timer = None
+            if self.c1:
+                due = [dl for i in self.alive() if (dl := self.nodes[i].next_timer()) is not None]
+                t_timer = min(due) if due else None
+            t_net = net.next_time()
+            if t_timer is not None and t_timer <= t_end and (t_net is None or t_timer <= t_net):
+                self._timers(t_timer)
+                continue
+            if t_net is None or t_net > t_end:
+                break
+            m = net.step(t_net)
+            if m is None:
+                continue
             node = self.nodes[m.dst]
             t = m.t_deliver
-            if m.kind == "DIGEST":
-                req = node.on_digest(t, m.payload)
-                if req:
-                    net.send(t, m.dst, m.src, "REQ", req, 8 + 10 * len(req))
-            elif m.kind == "REQ":
-                delta = node.on_request(m.payload)
-                if delta:
-                    net.send(t, m.dst, m.src, "DELTA", delta, delta.size)
-            elif m.kind == "DELTA":
-                node.on_delta(m.payload)
+            if self.c1:
+                if m.kind == "DIGEST":
+                    for out in node.on_digest_c1(t, m.src, self.nodes[m.src].uid, m.payload):
+                        self._emit(t, m.dst, out)
+                elif m.kind == "REQ":
+                    node.on_request_c1(t, m.payload)
+                elif m.kind == "DELTA":
+                    for out in node.on_delta_c1(t, m.src, m.payload):
+                        self._emit(t, m.dst, out)
+            else:
+                if m.kind == "DIGEST":
+                    req = node.on_digest(t, m.payload)
+                    if req:
+                        net.send(t, m.dst, m.src, "REQ", req, 8 + 10 * len(req))
+                elif m.kind == "REQ":
+                    delta = node.on_request(m.payload)
+                    if delta:
+                        net.send(t, m.dst, m.src, "DELTA", delta, delta.size)
+                elif m.kind == "DELTA":
+                    node.on_delta(m.payload)
 
     def _event(self, t: float) -> None:
         while self.events and self.events[0].t_s <= t:
             e = self.events.pop(0)
             if e.kind == "fail" and e.uav in self.world.uavs:
                 self.world.uavs[e.uav].alive = False
+                self.net.drop_queue(e.uav)
             elif e.kind == "join":
                 self._spawn(e.uav)
 
@@ -141,9 +203,14 @@ class Simulation:
                 self._event(t0)
             self.world.step(dt)
             alive = self.alive()
+            for i in alive:
+                self.sensors[i].nav.step(dt)  # ошибка навигации без ГНСС меняется во времени
             self.net.alive = set(alive)
             self.net.positions = {i: (self.world.uavs[i].x, self.world.uavs[i].y) for i in alive}
             t_us = EPOCH_US + int(round(t1 * 1e6))
+            # сначала — все события сети до конца шага, затем передачи этого шага
+            self._deliver(t1)
+            self.net.kick(t1)
             if not settling and t1 + 1e-9 >= next_frame:
                 next_frame += frame_dt
                 for i in alive:
@@ -155,12 +222,18 @@ class Simulation:
                     n.next_publish = t1 + sc.node.publish_period_s
                     s = self.sensors[i]
                     n.publish(t_us, s.nav_estimate(self.world.uavs[i]), s.nav_sigma)
+                    if self.c1:
+                        for out in n.push_out():
+                            part = out.payload.parts[0]
+                            self._emit_part(t1, i, part.origin, part.from_excl, part.to_incl, out)
                 if t1 + 1e-9 >= n.next_gossip:
                     n.next_gossip += sc.node.gossip_period_s
-                    vv = n.store.version_vector()
-                    for j in self.net.neighbours(i, t1):
-                        self.net.send(t1, i, j, "DIGEST", vv, 8 + 10 * len(vv))
-            self._deliver(t1)
+                    if self.c1:
+                        self._emit(t1, i, n.digest_out())
+                    else:
+                        vv = n.store.version_vector()
+                        for j in self.net.neighbours(i, t1):
+                            self.net.send(t1, i, j, "DIGEST", vv, 8 + 10 * len(vv))
             for i in alive:
                 n = self.nodes[i]
                 if t1 + 1e-9 >= n.next_picture:
@@ -178,6 +251,9 @@ class Simulation:
             if progress and step % int(60 / dt) == 0:
                 print(f"  t = {t1:7.1f} с, записей у U01: {len(self.nodes[0].store)}", flush=True)
         return Result(self._summary(), self.series)
+
+    def components(self, alive: list[int], t: float) -> list[list[int]]:
+        return self._components(alive, t)
 
     def _components(self, alive: list[int], t: float) -> list[list[int]]:
         seen: set[int] = set()
@@ -215,6 +291,8 @@ class Simulation:
             "objects_U01": len(n0.picture.objects) if n0.picture else 0,
             "kbytes_sent": round(self.net.bytes_sent / 1024, 1),
         })
+        if self.on_sample is not None:
+            self.on_sample(self, t, alive)
 
     # ------------------------------------------------------------------ итоги
     def _summary(self) -> dict[str, Any]:
@@ -271,8 +349,18 @@ class Simulation:
                 "mixed_objects": mixed,
                 "conflicts_marked": pic.n_conflicts,
             },
-            "net": {"mbytes_sent": round(self.net.bytes_sent / 2**20, 2),
-                    "msgs_sent": self.net.msgs_sent, "msgs_lost": self.net.msgs_lost},
+            "net": {"medium": self.sc.net.medium,
+                    "protocol": self.sc.node.protocol,
+                    "mbytes_sent": round(self.net.bytes_sent / 2**20, 2),
+                    # средняя передача одного борта, кбит/с (сравнить с полосой канала)
+                    "kbps_per_uav": round(self.net.bytes_sent * 8 / 1e3 / self.sc.run.duration_s
+                                          / max(1, self.sc.swarm.n_uav), 1),
+                    "msgs_sent": self.net.msgs_sent, "msgs_lost": self.net.msgs_lost,
+                    "deliveries": self.net.deliveries,
+                    # доля времени, когда эфир занят (для общей среды — загрузка канала)
+                    "air_busy_pct": round(100 * self.net.air_s / self.sc.run.duration_s
+                                          / (1 if self.sc.net.medium == "shared"
+                                             else max(1, self.sc.swarm.n_uav)), 1)},
         }
 
 

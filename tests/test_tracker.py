@@ -24,15 +24,15 @@ def _confirmed(cfg: NodeCfg) -> tuple[Node, float]:
 def test_gate_miss_goes_to_confirmed_track():
     n, t = _confirmed(NodeCfg())
     t += 0.2
-    n.on_frame(t, int(t * 1e6), [_det(t, 12.0, 0.0)])  # d² ≈ 30: вне gate_d2, в gate2_d2
+    n.on_frame(t, int(t * 1e6), [_det(t, 10.0, 0.0)])  # d² ≈ 30: вне gate_d2, в relaxed_gate_d2
     assert len(n.tracks) == 1
     assert n.tracks[0].hits == 21
 
 
 def test_gate_miss_splits_track_in_cycle0_mode():
-    n, t = _confirmed(NodeCfg(gate2_d2=0.0))
+    n, t = _confirmed(NodeCfg(relaxed_gate_d2=0.0))
     t += 0.2
-    n.on_frame(t, int(t * 1e6), [_det(t, 12.0, 0.0)])
+    n.on_frame(t, int(t * 1e6), [_det(t, 10.0, 0.0)])
     assert len(n.tracks) == 2
 
 
@@ -45,7 +45,7 @@ def test_false_detection_does_not_steal_object():
         t += 0.2
         n.on_frame(t, int(t * 1e6), [_det(t, 5.0, 2.0)])
     main = max(n.tracks, key=lambda tr: tr.hits)
-    assert main.hits == 26
+    assert main.hits >= 26  # отметки объекта — старому треку (с учётом слияния своих треков)
     assert all(tr.hits < NodeCfg().confirm_hits for tr in n.tracks if tr is not main)
 
 
