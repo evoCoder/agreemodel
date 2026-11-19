@@ -74,11 +74,29 @@ class Node:
                           [dt**2 / 2, 0, dt, 0], [0, dt**2 / 2, 0, dt]])
         return F @ tr.x, F @ tr.P @ F.T + Q
 
+    @staticmethod
+    def _update(tr: LocalTrack, pred: tuple[np.ndarray, np.ndarray], d: Detection,
+                t_us: int, H: np.ndarray) -> None:
+        x, P = pred
+        R = np.eye(2) * d.var
+        S = H @ P @ H.T + R
+        K = P @ H.T @ np.linalg.inv(S)
+        tr.x = x + K @ (np.array([d.x, d.y]) - H @ x)
+        IKH = np.eye(4) - K @ H
+        tr.P = IKH @ P @ IKH.T + K @ R @ K.T
+        tr.t_us = t_us
+        tr.hits += 1
+        tr.class_log += np.log(np.maximum(np.array(d.class_p), 1e-6))
+        tr.changed = True
+        tr.truth[d.truth_id] += 1
+
     def on_frame(self, t_s: float, t_us: int, dets: list[Detection]) -> None:
         H = np.zeros((2, 4))
         H[0, 0] = H[1, 1] = 1.0
         active = [tr for tr in self.tracks if tr.status == "A"]
         preds = [self._predict(tr, t_us) for tr in active]
+        conf = self.cfg.confirm_hits
+        tier = [0 if self.cfg.gate2_d2 > 0 and tr.hits >= conf else 1 for tr in active]
         pairs = []
         for j, d in enumerate(dets):
             z = np.array([d.x, d.y])
@@ -88,26 +106,43 @@ class Node:
                 nu = z - x[:2]
                 d2 = float(nu @ np.linalg.solve(S, nu))
                 if d2 <= self.cfg.gate_d2:
-                    pairs.append((d2, i, j))
+                    pairs.append((tier[i], d2, i, j))
+        # подтверждённые треки — первыми: иначе новый трек с большой ковариацией (часто от
+        # ложного обнаружения рядом) перехватывает отметки объекта и раздваивает его трек
         pairs.sort()
         used_t, used_d = set(), set()
-        for _, i, j in pairs:
+        for _, _, i, j in pairs:
             if i in used_t or j in used_d:
                 continue
             used_t.add(i)
             used_d.add(j)
-            tr, (x, P), d = active[i], preds[i], dets[j]
-            R = np.eye(2) * d.var
-            S = H @ P @ H.T + R
-            K = P @ H.T @ np.linalg.inv(S)
-            tr.x = x + K @ (np.array([d.x, d.y]) - H @ x)
-            IKH = np.eye(4) - K @ H
-            tr.P = IKH @ P @ IKH.T + K @ R @ K.T
-            tr.t_us = t_us
-            tr.hits += 1
-            tr.class_log += np.log(np.maximum(np.array(d.class_p), 1e-6))
-            tr.changed = True
-            tr.truth[d.truth_id] += 1
+            self._update(active[i], preds[i], dets[j], t_us, H)
+        if self.cfg.gate2_d2 > 0:
+            # второй этап: датчик даёт не больше одного обнаружения объекта за кадр, поэтому
+            # обнаружение рядом с подтверждённым треком, не получившим отметки, — скорее
+            # промах строба этого трека, чем новый объект; новый трек того же объекта
+            # раздвоил бы его (в картине два трека одного борта одновременно не объединяются)
+            pairs2 = []
+            for j, d in enumerate(dets):
+                if j in used_d:
+                    continue
+                z = np.array([d.x, d.y])
+                R = np.eye(2) * d.var
+                for i, (x, P) in enumerate(preds):
+                    if i in used_t or tier[i]:
+                        continue
+                    S = H @ P @ H.T + R
+                    nu = z - x[:2]
+                    d2 = float(nu @ np.linalg.solve(S, nu))
+                    if d2 <= self.cfg.gate2_d2:
+                        pairs2.append((d2, i, j))
+            pairs2.sort()
+            for _, i, j in pairs2:
+                if i in used_t or j in used_d:
+                    continue
+                used_t.add(i)
+                used_d.add(j)
+                self._update(active[i], preds[i], dets[j], t_us, H)
         for j, d in enumerate(dets):
             if j in used_d:
                 continue

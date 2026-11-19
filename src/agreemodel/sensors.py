@@ -55,6 +55,8 @@ class Sensor:
         self.rng = rng
         self.nav = GaussMarkov2D(rng, nav.sigma_m, nav.tau_s)
         self.nav_sigma = nav.sigma_m
+        self.nav_drift = nav.drift
+        self._t_us: int | None = None
 
     def nav_estimate(self, u: Uav) -> tuple[float, float]:
         """Оценка своего положения (навигация без ГНСС): истина плюс ошибка."""
@@ -62,6 +64,9 @@ class Sensor:
 
     def frame(self, t_us: int, u: Uav, world: World) -> list[Detection]:
         c, rng = self.cfg, self.rng
+        if self.nav_drift and self._t_us is not None:
+            self.nav.step((t_us - self._t_us) / 1e6)
+        self._t_us = t_us
         out = []
         r2max = c.fov_radius_m**2
         for o in world.objects:
