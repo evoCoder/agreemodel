@@ -1,0 +1,139 @@
+{
+  "scenario_file": "scenarios/c1/split_2_2_4.toml",
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "fixed": [],
+  "variants": [
+    {}
+  ],
+  "scenario": {
+    "run": {
+      "name": "split_2_2_4",
+      "seed": 7,
+      "duration_s": 1080,
+      "dt_s": 0.1,
+      "sample_s": 0.5,
+      "settle_s": 3.0
+    },
+    "swarm": {
+      "n_uav": 8,
+      "speed_kmh": 100,
+      "altitude_m": 150,
+      "spacing_m": 4.0,
+      "columns": 4,
+      "route_length_km": 30,
+      "wobble_m": 0.3
+    },
+    "objects": {
+      "count": 60,
+      "lateral_m": 300,
+      "moving_fraction": 0.3,
+      "max_speed_mps": 8
+    },
+    "sensor": {
+      "frame_hz": 5,
+      "fov_radius_m": 350,
+      "r50_m": 320,
+      "p_near": 0.95,
+      "sigma0_m": 1.5,
+      "sigma_k": 0.8,
+      "false_per_frame": 0.05,
+      "class_confusion": 0.1
+    },
+    "nav": {
+      "sigma_m": 4.0,
+      "tau_s": 60
+    },
+    "node": {
+      "publish_period_s": 0.25,
+      "picture_period_s": 0.25,
+      "gossip_period_s": 0.2,
+      "request_timeout_s": 0.6,
+      "rto_init_s": 0.3,
+      "rto_min_s": 0.12,
+      "rto_max_s": 1.0,
+      "rto_backoff": 1.5,
+      "request_fanout": 1,
+      "retry_fanout": 2,
+      "busy_recent_s": 0.05,
+      "response_window_s": 0.01,
+      "discover_s": 0.1,
+      "nack_timeout_s": 0.25,
+      "max_part_bytes": 480,
+      "park_parts": 256,
+      "push_own": true,
+      "protocol": "c1",
+      "track_lost_s": 4.0,
+      "confirm_hits": 3,
+      "gate_d2": 13.8,
+      "relaxed_gate_d2": 0.0,
+      "merge_d2": 6.0,
+      "q_accel": 1.0,
+      "init_vel_sigma": 5.0
+    },
+    "fusion": {
+      "gate": 4.0,
+      "class_gate": 0.8,
+      "ambiguity_margin": 2.0,
+      "coast_s": 10,
+      "vel_sigma": 1.0,
+      "stale_sigma_m": 5,
+      "uav_timeout_s": 3.0,
+      "cell_m": 150.0,
+      "association": "rules"
+    },
+    "net": {
+      "latency_ms": 30,
+      "jitter_ms": 10,
+      "loss": 0.05,
+      "bandwidth_kbps": 500,
+      "range_m": 3000,
+      "medium": "shared",
+      "mtu_bytes": 512,
+      "frag_overhead_bytes": 0,
+      "priority_kinds": [
+        "DIGEST",
+        "REQ"
+      ],
+      "partition": [
+        {
+          "start_s": 60,
+          "end_s": 960,
+          "groups": [
+            [
+              0,
+              1
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              4,
+              5,
+              6,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    "event": [
+      {
+        "t_s": 400,
+        "kind": "fail",
+        "uav": 5
+      },
+      {
+        "t_s": 1000,
+        "kind": "join",
+        "uav": 8
+      }
+    ]
+  }
+}
