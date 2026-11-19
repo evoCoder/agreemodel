@@ -1,0 +1,60 @@
+{
+  "scenario": "base",
+  "seed": 7,
+  "duration_s": 1080,
+  "uav_alive": 8,
+  "quantum_s": {
+    "max": 0.2,
+    "p95": 0.2
+  },
+  "picture_compute_ms": {
+    "p95": 4.63,
+    "max": 19.72
+  },
+  "restores": [
+    {
+      "t_s": 960,
+      "kind": "partition_end",
+      "store_conv_s": 1.0
+    },
+    {
+      "t_s": 1000,
+      "kind": "join U09",
+      "store_conv_s": 0.9
+    }
+  ],
+  "settle_conv_s": 0.1,
+  "final_pictures_identical": true,
+  "records_union": 378,
+  "records_missing_per_uav": {
+    "U01": 0,
+    "U02": 0,
+    "U03": 0,
+    "U04": 0,
+    "U05": 0,
+    "U07": 0,
+    "U08": 0,
+    "U09": 0
+  },
+  "picture": {
+    "objects": 50,
+    "truth_detected": 47,
+    "truth_covered": 46,
+    "duplicates": 4,
+    "false_objects": 0,
+    "mixed_objects": 1,
+    "conflicts_marked": 0
+  },
+  "net": {
+    "medium": "shared",
+    "protocol": "c1",
+    "mbytes_sent": 8.65,
+    "kbps_per_uav": 8.4,
+    "msgs_sent": 119777,
+    "msgs_lost": 16151,
+    "deliveries": 324552,
+    "air_busy_pct": 13.4
+  },
+  "wall_s": 51.2,
+  "version": "0.1.0"
+}

@@ -1,0 +1,66 @@
+[
+  {
+    "net.bandwidth_kbps": "250",
+    "runs": 4,
+    "restore_s": {
+      "max": 2.7,
+      "p95": 2.7,
+      "median": 2.5,
+      "not_reached": 0
+    },
+    "join_s": {
+      "max": 2.4,
+      "p95": 2.4,
+      "median": 2.0,
+      "not_reached": 0
+    },
+    "quantum_max_s": {
+      "max": 0.2,
+      "p95": 0.2,
+      "median": 0.2,
+      "not_reached": 0
+    },
+    "settle_s": {
+      "max": 0.1,
+      "p95": 0.1,
+      "median": 0.1,
+      "not_reached": 0
+    },
+    "all_identical": true,
+    "missing_total": 0,
+    "kbps_per_uav_median": 8.2,
+    "duplicates_median": 2
+  },
+  {
+    "net.bandwidth_kbps": "1000",
+    "runs": 4,
+    "restore_s": {
+      "max": 0.8,
+      "p95": 0.8,
+      "median": 0.8,
+      "not_reached": 0
+    },
+    "join_s": {
+      "max": 1.1,
+      "p95": 1.1,
+      "median": 1.0,
+      "not_reached": 0
+    },
+    "quantum_max_s": {
+      "max": 0.2,
+      "p95": 0.2,
+      "median": 0.2,
+      "not_reached": 0
+    },
+    "settle_s": {
+      "max": 0.2,
+      "p95": 0.2,
+      "median": 0.2,
+      "not_reached": 0
+    },
+    "all_identical": true,
+    "missing_total": 0,
+    "kbps_per_uav_median": 8.2,
+    "duplicates_median": 2
+  }
+]
