@@ -7,7 +7,7 @@ from agreemodel.config import EventCfg, NetCfg, NodeCfg, FusionCfg, PartitionCfg
 from agreemodel.net import Network
 from agreemodel.node import Node
 from agreemodel.sensors import Detection
-from agreemodel.sim import run
+from agreemodel.sim import Simulation, run
 
 
 def _net(**kw) -> Network:
@@ -238,3 +238,61 @@ def test_cycle0_protocol_still_available_for_comparison():
     s = run(sc).summary
     assert s["final_pictures_identical"]
     assert s["net"]["protocol"] == "c0"
+
+
+# ---------------------------------------------------------------- цикл 2
+
+def test_seeding_does_not_depend_on_float_hash():
+    """Засев только целыми: hash(float) различается на 32- и 64-битных платформах."""
+    import inspect
+    import re
+    import agreemodel.sim as S
+    for arg in re.findall(r"random\.Random\(([^\n]*)\)", inspect.getsource(S)):
+        assert ".random()" not in arg, arg
+
+
+def test_on_sample_callback_reads_state_without_changing_result():
+    seen = []
+    sc = _short(1)
+    a = Simulation(sc).run().summary
+    b = Simulation(_short(1), on_sample=lambda sim, t, alive: seen.append(
+        (t, len(sim.components(alive, t)), len(sim.nodes[alive[0]].truth_of)))).run().summary
+    assert seen and a["restores"] == b["restores"] and a["picture"] == b["picture"]
+
+
+def test_joining_uav_gets_its_own_formation_slot():
+    from agreemodel.config import ObjectsCfg, SwarmCfg
+    from agreemodel.world import World
+    w = World(SwarmCfg(), ObjectsCfg(count=1), random.Random(1))
+    slots = {w.slot(i) for i in range(w.cfg.n_uav + 2)}
+    assert len(slots) == w.cfg.n_uav + 2
+
+
+def test_navigation_error_changes_during_run():
+    sim = Simulation(_short(1))
+    nav = sim.sensors[0].nav
+    x0, y0 = nav.x, nav.y
+    sim.run()
+    assert (nav.x, nav.y) != (x0, y0)
+
+
+def test_split_own_tracks_are_merged_and_closed_as_merged():
+    n = _node(0, "U01")
+    for k in range(4):  # один объект, отметки двух треков
+        n.on_frame(k * 0.2, 1_000_000 + k * 200_000,
+                   [Detection(1_000_000 + k * 200_000, 0.0, 0.0, 1.0, (1.0, 0, 0, 0, 0), "T1")])
+    n.publish(1_600_000, (0.0, 0.0), 1.0)
+    # второй трек того же объекта (как после выпадения отметки из строба)
+    tr = n.tracks[0]
+    from agreemodel.node import LocalTrack
+    import numpy as np
+    dup = LocalTrack(99, tr.x.copy(), tr.P.copy(), tr.t_us, tr.t_us, tr.class_log.copy(),
+                     hits=3, published=True)
+    dup.truth["T1"] = 3
+    n.tracks.append(dup)
+    n.on_frame(0.8, 1_800_000, [])
+    n.publish(1_800_000, (0.0, 0.0), 1.0)
+    assert n.store.get("U01", "trk/99").data["st"] == "M"
+    from agreemodel.fusion import compute_picture
+    pic = compute_picture(n.store.records(), FusionCfg())
+    assert len(pic.objects) == 1

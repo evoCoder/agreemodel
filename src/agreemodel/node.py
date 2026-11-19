@@ -77,7 +77,8 @@ class LocalTrack:
     t0_us: int
     class_log: np.ndarray
     hits: int = 1
-    status: str = "A"  # A — активен, L — потерян
+    status: str = "A"  # A — активен, L — потерян, M — объединён с другим своим треком
+    merged_into: int | None = None
     changed: bool = True
     published: bool = False
     truth: Counter = field(default_factory=Counter)  # только для оценки по эталону
@@ -159,18 +160,29 @@ class Node:
                 continue
             used_t.add(i)
             used_d.add(j)
-            tr, (x, P), d = active[i], preds[i], dets[j]
-            R = np.eye(2) * d.var
-            S = H @ P @ H.T + R
-            K = P @ H.T @ np.linalg.inv(S)
-            tr.x = x + K @ (np.array([d.x, d.y]) - H @ x)
-            IKH = np.eye(4) - K @ H
-            tr.P = IKH @ P @ IKH.T + K @ R @ K.T
-            tr.t_us = t_us
-            tr.hits += 1
-            tr.class_log += np.log(np.maximum(np.array(d.class_p), 1e-6))
-            tr.changed = True
-            tr.truth[d.truth_id] += 1
+            self._update(active[i], preds[i], dets[j], t_us, H)
+        if self.cfg.relaxed_gate_d2 > 0:
+            pairs2 = []
+            for j, d in enumerate(dets):
+                if j in used_d:
+                    continue
+                z = np.array([d.x, d.y])
+                R = np.eye(2) * d.var
+                for i, (x, P) in enumerate(preds):
+                    if i in used_t:
+                        continue
+                    S = H @ P @ H.T + R
+                    nu = z - x[:2]
+                    d2 = float(nu @ np.linalg.solve(S, nu))
+                    if d2 <= self.cfg.relaxed_gate_d2:
+                        pairs2.append((d2, i, j))
+            pairs2.sort()
+            for _, i, j in pairs2:
+                if i in used_t or j in used_d:
+                    continue
+                used_t.add(i)
+                used_d.add(j)
+                self._update(active[i], preds[i], dets[j], t_us, H)
         for j, d in enumerate(dets):
             if j in used_d:
                 continue
@@ -182,6 +194,8 @@ class Node:
             tr.truth[d.truth_id] += 1
             self._next_tid += 1
             self.tracks.append(tr)
+        if self.cfg.merge_d2 > 0:
+            self._merge_own(t_us)
         lost_us = self.cfg.track_lost_s * 1e6
         keep = []
         for tr in self.tracks:
@@ -195,13 +209,60 @@ class Node:
         if self.unreflected_frame_t is None:
             self.unreflected_frame_t = t_s
 
+    def _update(self, tr: LocalTrack, pred, d: Detection, t_us: int, H: np.ndarray) -> None:
+        x, P = pred
+        R = np.eye(2) * d.var
+        S = H @ P @ H.T + R
+        K = P @ H.T @ np.linalg.inv(S)
+        tr.x = x + K @ (np.array([d.x, d.y]) - H @ x)
+        IKH = np.eye(4) - K @ H
+        tr.P = IKH @ P @ IKH.T + K @ R @ K.T
+        tr.t_us = t_us
+        tr.hits += 1
+        tr.class_log += np.log(np.maximum(np.array(d.class_p), 1e-6))
+        tr.changed = True
+        tr.truth[d.truth_id] += 1
+
+    def _merge_own(self, t_us: int) -> None:
+        """Два активных трека борта с совпадающими оценками — один объект: младший
+        (открыт позже) поглощается старшим; опубликованный младший закрывается «M»."""
+        # только подтверждённые треки: неподтверждённый рядом с треком — обычно ложная
+        # отметка или выпавшая из строба, он и так не публикуется
+        act = sorted((tr for tr in self.tracks
+                      if tr.status == "A" and tr.hits >= self.cfg.confirm_hits),
+                     key=lambda tr: tr.tid)
+        gone: set[int] = set()
+        for a_i, a in enumerate(act):
+            if a.tid in gone:
+                continue
+            for b in act[a_i + 1:]:
+                if b.tid in gone:
+                    continue
+                xa, Pa = self._predict(a, t_us)
+                xb, Pb = self._predict(b, t_us)
+                S = Pa[:2, :2] + Pb[:2, :2]
+                nu = xa[:2] - xb[:2]
+                if float(nu @ np.linalg.solve(S, nu)) > self.cfg.merge_d2:
+                    continue
+                # старший получает отметки младшего (число и классы), оценка — у старшего
+                a.hits += b.hits
+                a.class_log = a.class_log + b.class_log
+                a.truth.update(b.truth)
+                a.changed = True
+                gone.add(b.tid)
+                if b.published:
+                    b.status, b.changed, b.merged_into = "M", True, a.tid
+        if gone:
+            self.tracks = [tr for tr in self.tracks
+                           if tr.tid not in gone or tr.status == "M"]
+
     # ------------------------------------------------------------------ запись
     def publish(self, t_us: int, own_xy: tuple[float, float], nav_sigma: float) -> int:
         n = 0
         nav_var = nav_sigma**2
         keep = []
         for tr in self.tracks:
-            if tr.changed and tr.hits >= self.cfg.confirm_hits:
+            if tr.changed and (tr.hits >= self.cfg.confirm_hits or tr.status == "M"):
                 key = f"trk/{tr.tid}"
                 self.store.write(key, tr.t_us, {
                     "x": round(float(tr.x[0]), 3), "y": round(float(tr.x[1]), 3),
@@ -211,11 +272,12 @@ class Node:
                     "pxy": round(float(tr.P[0, 1]), 3),
                     "pyy": round(float(tr.P[1, 1]) + nav_var, 3),
                     "t0": tr.t0_us, "t1": tr.t_us, "n": tr.hits,
-                    "cls": tr.class_p, "st": tr.status})
+                    "cls": tr.class_p, "st": tr.status,
+                    **({"into": f"trk/{tr.merged_into}"} if tr.status == "M" else {})})
                 self.truth_of[key] = tr.truth.most_common(1)[0][0]
                 tr.changed, tr.published = False, True
                 n += 1
-            if tr.status == "L" and not tr.changed:
+            if tr.status in ("L", "M") and not tr.changed:
                 continue
             keep.append(tr)
         self.tracks = keep
