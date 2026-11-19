@@ -21,6 +21,12 @@ f зависит только от содержимого хранилища (н
    на всех бортах без согласования.
 5. Неоднозначность: если второй кандидат почти так же хорош, как первый, объект
    помечается как неразрешённый (conflict) — противоречие не скрывается (Р1.3).
+
+Решение «может ли трек войти в объект и с какой ценой» вынесено в стратегию ассоциации
+(``FusionCfg.association``, реестр ``ASSOCIATORS``): ``rules`` — правила цикла 0; модель
+сходства (ИИ) подключается своей стратегией через ``register_associator``. Стратегия
+обязана быть детерминированной: одинаковые входы → побитово одинаковая цена на всех
+бортах (иначе картины разойдутся).
 """
 
 from __future__ import annotations
@@ -126,6 +132,45 @@ class Picture:
         return sum(1 for o in self.objects if o.conflict)
 
 
+@dataclass
+class TrackView:
+    """Трек, приведённый к опорному времени, — вход стратегии ассоциации."""
+    rec: Record
+    x: float
+    y: float
+    P: Cov
+    t0: int
+    t1: int
+    cls: tuple[float, ...]
+
+
+class Associator:
+    """Стратегия ассоциации. cost — цена присоединения трека к объекту (меньше — лучше)
+    или None, если присоединение невозможно; trk присоединяется к объекту с наименьшей
+    ценой в пороге threshold. Ниже — правила цикла 0."""
+
+    def __init__(self, cfg: FusionCfg) -> None:
+        self.cfg = cfg
+        self.threshold = cfg.gate**2
+        self.margin = cfg.ambiguity_margin
+
+    def cost(self, obj: "PicObject", trk: TrackView) -> float | None:
+        iv = obj._intervals.get(trk.rec.origin)
+        if iv and any(a <= trk.t1 and trk.t0 <= b for a, b in iv):
+            return None  # борт видел оба одновременно — разные объекты
+        if _cos_dist(obj.cls, trk.cls) > self.cfg.class_gate:
+            return None
+        S = (obj.P[0] + trk.P[0], obj.P[1] + trk.P[1], obj.P[2] + trk.P[2])
+        return _mahal2(trk.x - obj.x, trk.y - obj.y, S)
+
+
+ASSOCIATORS: dict[str, type[Associator]] = {"rules": Associator}
+
+
+def register_associator(name: str, cls: type[Associator]) -> None:
+    ASSOCIATORS[name] = cls
+
+
 def _track_state(r: Record, t_ref: int, cfg: FusionCfg) -> tuple[float, float, Cov]:
     d = r.data
     x, y = d["x"], d["y"]
@@ -151,6 +196,8 @@ def compute_picture(records: Iterable[Record], cfg: FusionCfg) -> Picture:
             uav_recs.append(r)
             t_ref = max(t_ref, r.t_us)
         elif r.key.startswith("trk/"):
+            if r.data.get("st") == "M":
+                continue  # трек объединён борт-источником с другим своим треком
             tracks.append(r)
             t_ref = max(t_ref, r.data["t1"])
 
@@ -158,7 +205,8 @@ def compute_picture(records: Iterable[Record], cfg: FusionCfg) -> Picture:
     objs: list[PicObject] = []
     grid: dict[tuple[int, int], list[int]] = {}
     cell = cfg.cell_m
-    gate2 = cfg.gate**2
+
+    assoc = ASSOCIATORS[cfg.association](cfg)
 
     def cell_of(x: float, y: float) -> tuple[int, int]:
         return (math.floor(x / cell), math.floor(y / cell))
@@ -169,19 +217,13 @@ def compute_picture(records: Iterable[Record], cfg: FusionCfg) -> Picture:
         cands: list[tuple[float, int]] = []
         t0, t1 = r.data["t0"], r.data["t1"]
         cls = r.data["cls"]
+        tv = TrackView(r, x, y, P, t0, t1, tuple(cls))
         for gx in (cx - 1, cx, cx + 1):
             for gy in (cy - 1, cy, cy + 1):
                 for k in grid.get((gx, gy), ()):
-                    o = objs[k]
-                    iv = o._intervals.get(r.origin)
-                    if iv and any(a <= t1 and t0 <= b for a, b in iv):
-                        continue
-                    if _cos_dist(o.cls, cls) > cfg.class_gate:
-                        continue
-                    S = (o.P[0] + P[0], o.P[1] + P[1], o.P[2] + P[2])
-                    d2 = _mahal2(x - o.x, y - o.y, S)
-                    if d2 <= gate2:
-                        cands.append((d2, k))
+                    c = assoc.cost(objs[k], tv)
+                    if c is not None and c <= assoc.threshold:
+                        cands.append((c, k))
         if cands:
             cands.sort()
             d2best, k = cands[0]
@@ -197,7 +239,7 @@ def compute_picture(records: Iterable[Record], cfg: FusionCfg) -> Picture:
             s = sum(ex)
             o.cls = tuple(v / s for v in ex)
             o.t_last_us = max(o.t_last_us, t1)
-            if len(cands) > 1 and cands[1][0] - d2best < cfg.ambiguity_margin:
+            if len(cands) > 1 and cands[1][0] - d2best < assoc.margin:
                 o.conflict = True
                 objs[cands[1][1]].conflict = True
             new_cell = cell_of(o.x, o.y)

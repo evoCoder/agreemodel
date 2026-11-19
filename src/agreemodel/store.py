@@ -13,7 +13,11 @@
 Дельта для узла с вектором d по источнику o — все записи o с seq > d[o] и диапазон
 (d[o], vv[o]]. Получатель применяет часть дельты, только если начало диапазона не больше
 его текущего vv[o] — тогда свойство полноты сохраняется и после потерь и перестановок
-сообщений. Это обобщение механизма seq/ack/resend канала «борт — земля» на сеть
+сообщений. Длинный диапазон передаётся частями (parts_for): часть (a, b] несёт последние
+версии ключей с a < seq ≤ b, а ключ, перезаписанный источником позже b, придёт в части,
+покрывающей его новую версию. Поэтому в процессе приёма частей копия может временно
+держать прежнюю версию такого ключа; когда vv[o] доходит до версии источника, копия
+совпадает с источником (последняя версия каждого ключа входит в покрывающую её часть). Это обобщение механизма seq/ack/resend канала «борт — земля» на сеть
 «борт — борт»: передаётся только недостающее, после 15 мин разрыва — изменившиеся
 записи, а не вся история.
 
@@ -141,6 +145,32 @@ class ReplicatedStore:
             )
             parts.append(DeltaPart(origin, d, have, recs))
         return Delta(tuple(parts))
+
+    def parts_for(self, origin: str, after: int, upto: int | None = None,
+                  max_bytes: int | None = None) -> list[DeltaPart]:
+        """Части по источнику для диапазона (after, upto] (upto = None — до своей версии),
+        каждая не больше max_bytes. Часть (a, b] содержит последние версии ключей с
+        a < seq ≤ b; ключ, перезаписанный позже b, придёт в части, покрывающей его новую
+        версию. Получатель применяет части по порядку; копии сходятся, когда версия
+        получателя доходит до версии источника."""
+        have = self._vv.get(origin, 0)
+        hi = have if upto is None else min(upto, have)
+        if hi <= after:
+            return []
+        recs = sorted((r for r in self._by_origin.get(origin, {}).values()
+                       if after < r.seq <= hi), key=lambda r: r.seq)
+        if not max_bytes:
+            return [DeltaPart(origin, after, hi, tuple(recs))]
+        parts: list[DeltaPart] = []
+        lo, buf, size = after, [], 12
+        for r in recs:
+            if buf and size + r.size > max_bytes:
+                parts.append(DeltaPart(origin, lo, buf[-1].seq, tuple(buf)))
+                lo, buf, size = buf[-1].seq, [], 12
+            buf.append(r)
+            size += r.size
+        parts.append(DeltaPart(origin, lo, hi, tuple(buf)))
+        return parts
 
     def apply(self, delta: Delta) -> int:
         """Слияние дельты; возвращает число записей, изменивших копию."""
