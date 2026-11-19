@@ -205,8 +205,22 @@ def one(args: tuple[str, list[str], int]) -> dict[str, Any]:
     pic = compute_picture(recs, sc.fusion)
     assert rp["objects"] == len(pic.objects), "повтор ассоциации расходится с fusion.py"
     p = res.summary["picture"]
+    # ложные объекты картины: все треки — от ложных обнаружений (по эталону)
+    false = []
+    t_ref = pic.t_ref_us
+    for o in pic.objects:
+        if any(truth_of.get(m) is not None for m in o.members):
+            continue
+        recs_o = [n0.store.get(*m) for m in o.members]
+        near = min((math.hypot(w.x - o.x, w.y - o.y) for w in sim.world.objects), default=-1)
+        false.append({"members": len(o.members),
+                      "origins": sorted({m[0] for m in o.members}),
+                      "hits_max": max(r.data["n"] for r in recs_o),
+                      "dur_s": round(max((r.data["t1"] - r.data["t0"]) / 1e6 for r in recs_o), 1),
+                      "age_s": round((t_ref - o.t_last_us) / 1e6, 1),
+                      "nearest_truth_m": round(near, 1)})
     return {"seed": seed, "picture": p, "quantum_max": res.summary["quantum_s"]["max"],
-            "events": rp["events"]}
+            "events": rp["events"], "false": false}
 
 
 def main() -> int:
@@ -237,6 +251,10 @@ def main() -> int:
         "causes_share": {c: round(causes.get(c, 0) / max(n_ev, 1), 3) for c in CAUSES},
     }
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), "utf-8")
+    with open(out / "false.jsonl", "w", encoding="utf-8") as f:
+        for r in runs:
+            f.writelines(json.dumps({"seed": r["seed"], **e}, ensure_ascii=False) + "\n"
+                         for e in r["false"])
     with open(out / "events.jsonl", "w", encoding="utf-8") as f:
         for r in runs:
             f.writelines(json.dumps({"seed": r["seed"], **e}, ensure_ascii=False) + "\n" for e in r["events"])
