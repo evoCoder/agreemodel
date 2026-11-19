@@ -37,6 +37,10 @@ class ObjectsCfg:
     lateral_m: float = 300.0
     moving_fraction: float = 0.3
     max_speed_mps: float = 8.0
+    # группы объектов (колонна, скопление техники): count объектов размещаются группами по
+    # cluster_size в круге радиуса cluster_spread_m; 1 — одиночные объекты (как в циклах 0–2)
+    cluster_size: int = 1
+    cluster_spread_m: float = 20.0
 
 
 @dataclass

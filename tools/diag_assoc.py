@@ -101,6 +101,7 @@ def replay(records: list[Any], cfg: Any, truth_of: dict, nav: NavLog) -> dict[st
     objs: list[dict[str, Any]] = []
     grid: dict[tuple[int, int], list[int]] = {}
     events: list[dict[str, Any]] = []
+    mixes: list[dict[str, Any]] = []
     for r in tracks:
         x, y, P = _track_state(r, t_ref, cfg)
         t0, t1, cls = r.data["t0"], r.data["t1"], r.data["cls"]
@@ -126,6 +127,19 @@ def replay(records: list[Any], cfg: Any, truth_of: dict, nav: NavLog) -> dict[st
             cands.sort()
             k = cands[0][1]
             o = objs[k]
+            top = o["truth"].most_common(1)[0][0]
+            if tid is not None and top is not None and top != tid:
+                # ошибочное слияние: трек одного объекта эталона ушёл в объект другого
+                right = [c for c in cands if objs[c[1]]["truth"].most_common(1)[0][0] == tid]
+                exists = any(ob["truth"].most_common(1)[0][0] == tid for ob in objs)
+                mixes.append({"origin": r.origin, "key": r.key, "truth": tid, "into": top,
+                              "d2_best": round(cands[0][0], 2), "n_cands": len(cands),
+                              "right_in_gate": bool(right),
+                              "d2_right": round(right[0][0], 2) if right else None,
+                              "right_exists": exists,
+                              "dist_m": round(math.hypot(x - o["x"], y - o["y"]), 1),
+                              "sigma_m": round(math.sqrt((o["P"][0] + P[0] + o["P"][2] + P[2]) / 2), 1),
+                              "stale_track": stale_r})
             old = cell_of(o["x"], o["y"])
             o["x"], o["y"], o["P"] = ci_fuse(o["x"], o["y"], o["P"], x, y, P)
             o["iv"].setdefault(r.origin, []).append((t0, t1))
@@ -185,7 +199,7 @@ def replay(records: list[Any], cfg: Any, truth_of: dict, nav: NavLog) -> dict[st
                      "truth": Counter({tid: 1}), "bias": [b], "stale": stale_r, "n": 1,
                      "log_cls": [math.log(max(c, 1e-6)) for c in cls]})
         grid.setdefault((cx, cy), []).append(len(objs) - 1)
-    return {"objects": len(objs), "events": events}
+    return {"objects": len(objs), "events": events, "mixes": mixes}
 
 
 def one(args: tuple[str, list[str], int]) -> dict[str, Any]:
@@ -220,7 +234,7 @@ def one(args: tuple[str, list[str], int]) -> dict[str, Any]:
                       "age_s": round((t_ref - o.t_last_us) / 1e6, 1),
                       "nearest_truth_m": round(near, 1)})
     return {"seed": seed, "picture": p, "quantum_max": res.summary["quantum_s"]["max"],
-            "events": rp["events"], "false": false}
+            "events": rp["events"], "mixes": rp["mixes"], "false": false}
 
 
 def main() -> int:
@@ -249,8 +263,19 @@ def main() -> int:
         "missed_merges": n_ev,
         "causes": {c: causes.get(c, 0) for c in CAUSES},
         "causes_share": {c: round(causes.get(c, 0) / max(n_ev, 1), 3) for c in CAUSES},
+        "wrong_merges": {
+            "total": sum(len(r["mixes"]) for r in runs),
+            "right_in_gate": sum(e["right_in_gate"] for r in runs for e in r["mixes"]),
+            "right_exists_not_in_gate": sum(e["right_exists"] and not e["right_in_gate"]
+                                            for r in runs for e in r["mixes"]),
+            "right_absent": sum(not e["right_exists"] for r in runs for e in r["mixes"]),
+        },
     }
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), "utf-8")
+    with open(out / "mixes.jsonl", "w", encoding="utf-8") as f:
+        for r in runs:
+            f.writelines(json.dumps({"seed": r["seed"], **e}, ensure_ascii=False) + "\n"
+                         for e in r["mixes"])
     with open(out / "false.jsonl", "w", encoding="utf-8") as f:
         for r in runs:
             f.writelines(json.dumps({"seed": r["seed"], **e}, ensure_ascii=False) + "\n"
@@ -259,7 +284,7 @@ def main() -> int:
         for r in runs:
             f.writelines(json.dumps({"seed": r["seed"], **e}, ensure_ascii=False) + "\n" for e in r["events"])
     print(json.dumps({k: summary[k] for k in ("totals", "duplicate_rate", "missed_merges",
-                                              "causes", "causes_share")},
+                                              "causes", "causes_share", "wrong_merges")},
                      ensure_ascii=False, indent=2))
     return 0
 
