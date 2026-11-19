@@ -127,17 +127,24 @@ class World:
 
     # ------------------------------------------------------------------ объекты
     def _make_objects(self, cfg: ObjectsCfg) -> list[GroundObject]:
-        out = []
-        for k in range(cfg.count):
+        out: list[GroundObject] = []
+        while len(out) < cfg.count:
             s = self.rng.uniform(0.02, 0.98) * self.route.length
             x, y, h = self.route.at(s)
             off = self.rng.uniform(-cfg.lateral_m, cfg.lateral_m)
             moving = self.rng.random() < cfg.moving_fraction
             cls = self.rng.choices(range(N_CLASSES), weights=(5, 2, 3, 0.5, 1))[0]
-            out.append(GroundObject(
-                f"T{k + 1:03d}", cls, x - off * math.sin(h), y + off * math.cos(h),
-                self.rng.uniform(1.0, cfg.max_speed_mps) if moving else 0.0,
-                self.rng.uniform(0, 2 * math.pi)))
+            cx, cy = x - off * math.sin(h), y + off * math.cos(h)
+            speed = self.rng.uniform(1.0, cfg.max_speed_mps) if moving else 0.0
+            heading = self.rng.uniform(0, 2 * math.pi)
+            out.append(GroundObject(f"T{len(out) + 1:03d}", cls, cx, cy, speed, heading))
+            # остальные объекты группы: рядом, того же или соседнего класса, общий курс
+            for _ in range(min(cfg.cluster_size, cfg.count - len(out) + 1) - 1):
+                a = self.rng.uniform(0, 2 * math.pi)
+                r = cfg.cluster_spread_m * math.sqrt(self.rng.random())
+                c = cls if self.rng.random() < 0.7 else self.rng.randrange(N_CLASSES)
+                out.append(GroundObject(f"T{len(out) + 1:03d}", c, cx + r * math.cos(a),
+                                        cy + r * math.sin(a), speed, heading))
         return out
 
     # ------------------------------------------------------------------ шаг
