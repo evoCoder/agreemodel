@@ -22,7 +22,7 @@ def _confirmed(cfg: NodeCfg) -> tuple[Node, float]:
 
 
 def test_gate_miss_goes_to_confirmed_track():
-    n, t = _confirmed(NodeCfg())
+    n, t = _confirmed(NodeCfg(relaxed_gate_d2=25.0))
     t += 0.2
     n.on_frame(t, int(t * 1e6), [_det(t, 10.0, 0.0)])  # d² ≈ 30: вне gate_d2, в relaxed_gate_d2
     assert len(n.tracks) == 1
