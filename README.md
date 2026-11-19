@@ -57,6 +57,18 @@ python -m http.server 8765 -d dist/web       # открыть http://127.0.0.1:8
 | `tools/build_web.py` | сборка; `version.json` — версия, коммит, дата; `SHA256SUMS` |
 | `tests/test_web.py`, `tests/web/e2e.mjs` | проверки связки и собранной страницы в браузере |
 
+### Переносимая версия для Windows, история, видео
+
+```bash
+python tools/build_win.py          # → dist/soglasie-v<версия>-win64.zip (+ .sha256)
+python tools/export_history.py     # → dist/history: история коммитов, копия репозитория, журнал циклов
+node tools/record_video.mjs        # запись показа браузером без интерфейса (нужен playwright-core)
+```
+
+Архив: `start.bat` → `serve.py` (локальный сервер на 127.0.0.1, встраиваемый Python для
+Windows из `win/vendor.json`) → страница в браузере по умолчанию. Установка, права
+администратора и интернет не нужны. Тот же `serve.py` запускает страницу на Linux и macOS.
+
 ## Состав
 
 | Модуль | Назначение |
