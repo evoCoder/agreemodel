@@ -296,3 +296,24 @@ def test_split_own_tracks_are_merged_and_closed_as_merged():
     from agreemodel.fusion import compute_picture
     pic = compute_picture(n.store.records(), FusionCfg())
     assert len(pic.objects) == 1
+
+
+def test_scenario_json_round_trip_gives_same_result(tmp_path):
+    import json
+    from agreemodel.config import load, to_dict
+    sc = _short(2)
+    p = tmp_path / "scenario.json"
+    p.write_text(json.dumps(to_dict(sc)), encoding="utf-8")
+    a, b = run(sc).summary, run(load(p)).summary
+    assert a["restores"] == b["restores"] and a["picture"] == b["picture"]
+
+
+def test_join_restore_counts_from_appearance_of_joining_uav():
+    s = run(_short(1)).summary
+    join = [r for r in s["restores"] if r["kind"].startswith("join")][0]
+    assert join["store_conv_s"] > 0.0  # новичку нужно время на получение состояния
+
+
+def test_fix_latency_within_publish_period():
+    s = run(_short(1)).summary
+    assert s["fix_latency_s"]["max"] <= NodeCfg().publish_period_s + 1e-9

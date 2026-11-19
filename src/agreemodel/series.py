@@ -64,6 +64,9 @@ def _one(args: tuple[str, dict[str, str], list[str], int]) -> dict[str, Any]:
     row["restore_s"] = max((x if x is not None else float("inf") for x in part), default=None)
     row["join_s"] = max((x if x is not None else float("inf") for x in join), default=None)
     row["quantum_max_s"] = s["quantum_s"]["max"]
+    row["fix_p95_s"] = s["fix_latency_s"]["p95"]
+    row["fix_max_s"] = s["fix_latency_s"]["max"]
+    row["store_kb"] = s["store_kbytes_max"]
     row["settle_s"] = s["settle_conv_s"] if s["settle_conv_s"] is not None else float("inf")
     row["identical"] = s["final_pictures_identical"]
     row["missing"] = sum(s["records_missing_per_uav"].values())
@@ -91,7 +94,7 @@ def run_series(path: str, seeds: list[int], variants: list[dict[str, str]],
         rs = [r for r in rows if all(r.get(k) == val for k, val in v.items())]
         entry: dict[str, Any] = dict(v)
         entry["runs"] = len(rs)
-        for key in ("restore_s", "join_s", "quantum_max_s", "settle_s"):
+        for key in ("restore_s", "join_s", "quantum_max_s", "settle_s", "fix_p95_s", "fix_max_s"):
             vals = [r[key] for r in rs if r[key] is not None]
             entry[key] = {"max": max(vals, default=None), "p95": _pct(vals, 0.95),
                           "median": _pct(vals, 0.5),

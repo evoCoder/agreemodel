@@ -171,8 +171,17 @@ def _build(cls: type, raw: dict[str, Any]) -> Any:
 
 
 def load(path: str | Path) -> Scenario:
+    """Сценарий из TOML или JSON (та же структура; JSON — как scenario.json выгрузки)."""
+    if str(path).lower().endswith(".json"):
+        import json
+        with open(path, encoding="utf-8") as f:
+            return from_dict(json.load(f))
     with open(path, "rb") as f:
         return _build(Scenario, tomllib.load(f))
+
+
+def from_dict(raw: dict[str, Any]) -> Scenario:
+    return _build(Scenario, raw)
 
 
 def to_dict(obj: Any) -> Any:
