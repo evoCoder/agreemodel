@@ -31,6 +31,28 @@ def _apply_override(sc, expr: str) -> None:
     setattr(obj, leaf, value)
 
 
+def picture_export(res) -> dict:
+    """Итоговая общая картина каждого работающего борта — выход для смежных технологий
+    (распределение задач) и для сравнения с эталоном внешнего симулятора."""
+    out = {}
+    for i in res.sim.alive():
+        n = res.sim.nodes[i]
+        pic = n.picture
+        if pic is None:
+            continue
+        out[n.uid] = {
+            "t_ref_us": pic.t_ref_us, "digest": pic.digest,
+            "objects": [{"id": o.oid, "x": round(o.x, 2), "y": round(o.y, 2),
+                         "cov": [round(v, 2) for v in o.P],
+                         "cls": [round(v, 3) for v in o.cls],
+                         "sources": [f"{a}/{b}" for a, b in o.members],
+                         "unresolved": o.conflict} for o in pic.objects],
+            "uavs": [{"uid": u.uid, "x": round(u.x, 2), "y": round(u.y, 2),
+                      "t_us": u.t_us, "alive": u.alive} for u in pic.uavs],
+        }
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="agreemodel", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -74,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
                                           encoding="utf-8")
         (out / "scenario.json").write_text(json.dumps(to_dict(sc), ensure_ascii=False, indent=2),
                                            encoding="utf-8")
+        (out / "picture.json").write_text(
+            json.dumps(picture_export(res), ensure_ascii=False, indent=1), encoding="utf-8")
         with open(out / "series.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(res.series[0]))
             w.writeheader()

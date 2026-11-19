@@ -79,6 +79,7 @@ class LocalTrack:
     hits: int = 1
     status: str = "A"  # A — активен, L — потерян, M — объединён с другим своим треком
     merged_into: int | None = None
+    t_confirm_s: float | None = None  # кадр, в котором трек набрал confirm_hits
     changed: bool = True
     published: bool = False
     truth: Counter = field(default_factory=Counter)  # только для оценки по эталону
@@ -126,6 +127,9 @@ class Node:
         self.published_frame_t: float | None = None  # первый записанный, не отражённый в картине
         self.quantum_s: list[float] = []
         self.compute_ms: list[float] = []
+        self.fix_s: list[float] = []
+        self._frame_t = 0.0
+        self._now_s = 0.0
         self.truth_of: dict[str, str | None] = {}  # ключ записи → объект эталона (оценка)
 
     # ------------------------------------------------------------------ сопровождение
@@ -139,6 +143,7 @@ class Node:
         return F @ tr.x, F @ tr.P @ F.T + Q
 
     def on_frame(self, t_s: float, t_us: int, dets: list[Detection]) -> None:
+        self._frame_t = t_s
         H = np.zeros((2, 4))
         H[0, 0] = H[1, 1] = 1.0
         active = [tr for tr in self.tracks if tr.status == "A"]
@@ -219,6 +224,8 @@ class Node:
         tr.P = IKH @ P @ IKH.T + K @ R @ K.T
         tr.t_us = t_us
         tr.hits += 1
+        if tr.hits == self.cfg.confirm_hits and tr.t_confirm_s is None:
+            tr.t_confirm_s = self._frame_t
         tr.class_log += np.log(np.maximum(np.array(d.class_p), 1e-6))
         tr.changed = True
         tr.truth[d.truth_id] += 1
@@ -257,7 +264,9 @@ class Node:
                            if tr.tid not in gone or tr.status == "M"]
 
     # ------------------------------------------------------------------ запись
-    def publish(self, t_us: int, own_xy: tuple[float, float], nav_sigma: float) -> int:
+    def publish(self, t_us: int, own_xy: tuple[float, float], nav_sigma: float,
+                t_s: float | None = None) -> int:
+        self._now_s = t_s if t_s is not None else self._frame_t
         n = 0
         nav_var = nav_sigma**2
         keep = []
@@ -275,6 +284,10 @@ class Node:
                     "cls": tr.class_p, "st": tr.status,
                     **({"into": f"trk/{tr.merged_into}"} if tr.status == "M" else {})})
                 self.truth_of[key] = tr.truth.most_common(1)[0][0]
+                if not tr.published and tr.t_confirm_s is not None:
+                    # задержка фиксации нового наблюдения: от кадра, подтвердившего трек,
+                    # до записи в хранилище (дальше запись рассылается и входит в картину)
+                    self.fix_s.append(self._now_s - tr.t_confirm_s)
                 tr.changed, tr.published = False, True
                 n += 1
             if tr.status in ("L", "M") and not tr.changed:
