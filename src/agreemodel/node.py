@@ -18,16 +18,21 @@
   срока ожидания, у двух соседей; пока эфир занят, повтор откладывается;
 * перед запросом к новым соседям борт discover_s собирает их векторы — так все запросившие
   обращаются к одному ответчику (к самому источнику, если он доступен);
-* ответ — широковещательная дельта по источнику от наименьшей запрошенной версии: её
-  применяют все соседи, кому она нужна; запросы, пришедшие за окно response_window_s,
-  объединяются; если часть уже в эфире (своя или услышанная от соседа), досылается только
-  записанное после неё;
+* ответ — широковещательная дельта по источнику от наименьшей запрошенной версии,
+  нарезанная на части по одному пакету канала (потеря пакета теряет одну часть, а не
+  весь ответ); её применяют все соседи, кому она нужна; запросы, пришедшие за окно
+  response_window_s, объединяются; передаются только куски диапазона, которых нет в
+  эфире (своя передача в очереди или услышанная от соседа);
+* части, пришедшие после пропуска, откладываются; пропуск дозапрашивается сразу у
+  отправителя (NACK) — только он, без ожидания срока; ответ из нескольких частей
+  замыкается пустой частью — так виден и пропуск последней части;
 * срок ожидания ответа — адаптивный по замерам RTT (RFC 6298: SRTT + 4·RTTVAR, правило
   Карна, умеренное увеличение при повторе), а не фиксированные 0,6 с.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -37,7 +42,7 @@ import numpy as np
 from .config import FusionCfg, NodeCfg
 from .fusion import Picture, compute_picture
 from .sensors import Detection
-from .store import Delta, ReplicatedStore
+from .store import Delta, DeltaPart, ReplicatedStore
 
 
 @dataclass
@@ -56,6 +61,7 @@ class Pending:
     deadline: float
     tries: int
     peers: tuple[int, ...]
+    nack: bool = False  # дозапрос пропуска: короткий срок, без откладывания по занятости эфира
 
 
 PEER_FRESH_S = 1.0  # сосед считается доступным, если его вектор слышали не раньше
@@ -106,8 +112,12 @@ class Node:
         self.rttvar = 0.0
         self.rto = ncfg.rto_init_s
         self.rtt_samples: list[float] = []
-        self.outbox: dict[str, tuple[int, float]] = {}  # источник → (от версии, срок отправки)
-        self.sent: dict[str, tuple[int, int, float]] = {}  # источник → (от, до, доставлено к)
+        # источник → (от версии, до версии (0 — всё), срок отправки)
+        self.outbox: dict[str, tuple[int, int, float]] = {}
+        # источник → диапазоны [от, до, «в эфире» до момента] (inf — своя часть в очереди)
+        self.air: dict[str, list[list]] = {}
+        self.parked: dict[str, dict[int, object]] = {}  # части после пропуска
+        self.nacked: dict[str, tuple[tuple[int, int], float]] = {}  # последний дозапрос пропуска
         self.pushed_to = 0
         self.next_trigger = 0.0
         self.hold_until = 0.0  # до этого момента — сбор векторов новых соседей, без запросов
@@ -260,22 +270,25 @@ class Node:
         vv = self.store.version_vector()
         return Out("DIGEST", None, vv, 8 + 10 * len(vv))
 
-    def push_out(self) -> Out | None:
-        """Свои записи после последней рассылки — одной широковещательной частью."""
-        if not self.cfg.push_own:
-            return None
-        have = self.store.version_vector().get(self.uid, 0)
-        if have <= self.pushed_to:
-            return None
-        d = self.store.delta_for({self.uid: self.pushed_to}, {self.uid})
-        self.pushed_to = have
+    def _part_out(self, part) -> Out:
+        d = Delta((part,))
         return Out("DELTA", None, d, d.size)
+
+    def push_out(self) -> list[Out]:
+        """Свои записи после последней рассылки — широковещательными частями."""
+        if not self.cfg.push_own:
+            return []
+        parts = self.store.parts_for(self.uid, self.pushed_to, None, self.cfg.max_part_bytes)
+        if parts:
+            self.pushed_to = parts[-1].to_incl
+        return [self._part_out(p) for p in parts]
 
     def _rto_for(self, tries: int) -> float:
         return min(self.cfg.rto_max_s, self.rto * self.cfg.rto_backoff ** min(tries - 1, 4))
 
     def _sources_for(self, origin: str, need: int, t_s: float) -> list[int]:
-        """Соседи, у которых есть версия источника выше нашей, в порядке предпочтения."""
+        """Соседи, у которых есть версия источника выше нашей, в порядке предпочтения:
+        сам источник, затем наибольшая версия, затем номер борта (одинаково у всех)."""
         cands = []
         for j, (t_heard, vv) in self.peer_vv.items():
             v = vv.get(origin, 0)
@@ -302,18 +315,24 @@ class Node:
         for origin in p_src:
             p = self.req.get(origin)
             if p is not None and src in p.peers and peer_vv[origin] > p.want_to:
-                p.want_to = peer_vv[origin]  # тот же источник ушёл вперёд — ждём и это
+                p.want_to = peer_vv[origin]  # тот же ответчик ушёл вперёд — ждём и это
         if t_s < self.hold_until:
             return outs
         outs += self.request_due(t_s, only=p_src)
         return outs
 
+    def _gap_end(self, origin: str) -> int:
+        """Верхняя граница пропуска: начало первой отложенной части (0 — нет)."""
+        pk = self.parked.get(origin)
+        return min(pk) if pk else 0
+
     def request_due(self, t_s: float, only: set[str] | None = None,
                     busy: bool = False) -> list[Out]:
         """Запросы недостающего: новые и повторные (срок ожидания истёк).
 
-        busy — канал сейчас занят: повтор откладывается (при занятом эфире он только встал
-        бы в очередь), но не дольше rto_max_s после последнего запроса."""
+        Запрос — диапазон (своя версия, конец пропуска]; если отложенных частей нет —
+        всё после своей версии. busy — эфир занят: повтор откладывается (при занятом эфире
+        он только встал бы в очередь), но не дольше rto_max_s после последнего запроса."""
         self.hold_until = min(self.hold_until, t_s)
         mine = self.store.version_vector()
         best: dict[str, int] = {}
@@ -323,7 +342,7 @@ class Node:
             for o, v in vv.items():
                 if v > best.get(o, 0):
                     best[o] = v
-        per_peer: dict[int, dict[str, int]] = {}
+        per_peer: dict[int, dict[str, tuple[int, int]]] = {}
         for origin in sorted(best):
             if only is not None and origin not in only:
                 continue
@@ -334,7 +353,7 @@ class Node:
             p = self.req.get(origin)
             if p is not None and have < p.want_to and t_s < p.deadline:
                 continue
-            if (p is not None and have < p.want_to and busy
+            if (p is not None and have < p.want_to and busy and not p.nack
                     and t_s - p.t_sent < self.cfg.rto_max_s):
                 p.deadline = t_s + 0.05
                 continue
@@ -350,17 +369,17 @@ class Node:
             want = max(self.peer_vv[j][1].get(origin, 0) for j in peers)
             self.req[origin] = Pending(want, t_s, t_s + self._rto_for(tries), tries, peers)
             for j in peers:
-                per_peer.setdefault(j, {})[origin] = have
+                per_peer.setdefault(j, {})[origin] = (have, self._gap_end(origin))
         if only is None:
             # срок истёк, а запросить не у кого (соседи пропали) — снять ожидание; запрос
             # возобновится, когда вектор версий придёт от соседа, у которого это есть
             for origin in [o for o, p in self.req.items() if p.deadline <= t_s + 1e-9]:
                 del self.req[origin]
-        return [Out("REQ", j, per_peer[j], 8 + 10 * len(per_peer[j])) for j in sorted(per_peer)]
+        return [Out("REQ", j, per_peer[j], 8 + 14 * len(per_peer[j])) for j in sorted(per_peer)]
 
     def next_timer(self) -> float | None:
         """Ближайший срок: отправка ответа, повтор запроса, конец сбора векторов."""
-        ts = [dl for _, dl in self.outbox.values()]
+        ts = [dl for _, _, dl in self.outbox.values()]
         ts += [p.deadline for p in self.req.values()]
         if self.hold_until > 0.0:
             ts.append(self.hold_until)
@@ -372,58 +391,110 @@ class Node:
             return True
         return False
 
-    def on_request_c1(self, t_s: float, req: dict[str, int]) -> None:
+    def on_request_c1(self, t_s: float, req: dict[str, tuple[int, int]]) -> None:
         mine = self.store.version_vector()
-        for origin, d in req.items():
+        for origin, (d, upto) in req.items():
             if mine.get(origin, 0) <= d:
                 continue
             ob = self.outbox.get(origin)
             if ob is None:
-                self.outbox[origin] = (d, t_s + self.cfg.response_window_s)
+                self.outbox[origin] = (d, upto, t_s + self.cfg.response_window_s)
             else:
-                self.outbox[origin] = (min(ob[0], d), ob[1])
+                u = 0 if (ob[1] == 0 or upto == 0) else max(ob[1], upto)
+                self.outbox[origin] = (min(ob[0], d), u, ob[2])
 
     def flush(self, t_s: float) -> list[tuple[str, int, int, Out]]:
-        """Дельты, срок отправки которых наступил: (источник, от, до, сообщение).
+        """Части, срок отправки которых наступил: (источник, от, до, сообщение).
 
-        Если часть по источнику уже в эфире (своя или услышанная от соседа) и покрывает
-        запрошенное начало, передаётся только записанное после неё."""
+        Если диапазон по источнику уже в эфире (своя передача в очереди или в эфире,
+        или услышанная от соседа) и покрывает запрошенное начало, передаётся только
+        записанное после него."""
         res = []
         mine = self.store.version_vector()
         for origin in sorted(self.outbox):
-            d, dl = self.outbox[origin]
+            d, upto, dl = self.outbox[origin]
             if dl > t_s + 1e-9:
                 continue
             del self.outbox[origin]
-            s = self.sent.get(origin)
-            if s is not None and s[0] <= d and t_s <= s[2]:
-                if s[1] >= mine.get(origin, 0):
-                    continue  # уже в эфире целиком
-                d = max(d, s[1])
-            delta = self.store.delta_for({origin: d}, {origin})
-            if delta:
-                part = delta.parts[0]
-                res.append((origin, part.from_excl, part.to_incl,
-                            Out("DELTA", None, delta, delta.size)))
+            hi = mine.get(origin, 0) if upto == 0 else min(upto, mine.get(origin, 0))
+            for a, b in self.uncovered(origin, d, hi, t_s):
+                parts = self.store.parts_for(origin, a, b, self.cfg.max_part_bytes)
+                for part in parts:
+                    res.append((origin, part.from_excl, part.to_incl, self._part_out(part)))
+                if len(parts) > 1:
+                    # замыкающая пустая часть (b, b]: если последняя часть потеряна,
+                    # получатель увидит пропуск по ней и дозапросит сразу
+                    end = DeltaPart(origin, b, b, ())
+                    res.append((origin, b, b, self._part_out(end)))
         return res
 
-    def note_sent(self, origin: str, from_excl: int, to_incl: int, t_done: float) -> None:
-        s = self.sent.get(origin)
-        if s is not None and s[0] <= from_excl and s[2] >= t_done - 1.0:
-            # продолжение уже переданной части — покрытие (s.от, до]
-            self.sent[origin] = (s[0], max(s[1], to_incl), max(s[2], t_done))
-        else:
-            self.sent[origin] = (from_excl, to_incl, t_done)
+    def _on_air(self, origin: str, f: int, to: int, t_done: float) -> list:
+        lst = self.air.setdefault(origin, [])
+        e = [f, to, t_done]
+        lst.append(e)
+        return e
 
-    def on_delta_c1(self, t_s: float, src: int, delta: Delta) -> int:
+    def uncovered(self, origin: str, d: int, hi: int, t_s: float) -> list[tuple[int, int]]:
+        """Куски диапазона (d, hi], не покрытые тем, что сейчас в эфире или в очереди."""
+        lst = self.air.get(origin)
+        if lst:
+            lst[:] = [e for e in lst if e[2] >= t_s]
+        ivs = sorted((f, to) for f, to, _ in (lst or ()) if to > d and f < hi)
+        out, x = [], d
+        for f, to in ivs:
+            if f > x:
+                out.append((x, min(f, hi)))
+            x = max(x, to)
+            if x >= hi:
+                break
+        if x < hi:
+            out.append((x, hi))
+        return out
+
+    def note_queued(self, origin: str, from_excl: int, to_incl: int) -> list:
+        """Своя часть поставлена в очередь: до окончания передачи она «в эфире».
+        Возвращает запись, которую note_sent отметит окончанием передачи."""
+        return self._on_air(origin, from_excl, to_incl, math.inf)
+
+    @staticmethod
+    def note_sent(entry: list, t_done: float) -> None:
+        entry[2] = t_done
+
+    def on_delta_c1(self, t_s: float, src: int, delta: Delta) -> list[Out]:
+        """Принять части; вернуть немедленные дозапросы пропусков (NACK)."""
+        n = 0
+        nacks: dict[str, tuple[int, int]] = {}
         for part in delta.parts:
             # услышанная чужая передача: свой ответ по этому источнику не дублировать
-            s = self.sent.get(part.origin)
-            if s is None or part.from_excl < s[0] or t_s > s[2]:
-                self.sent[part.origin] = (part.from_excl, part.to_incl, t_s + HEARD_HOLD_S)
-            elif part.to_incl > s[1]:
-                self.sent[part.origin] = (s[0], part.to_incl, max(s[2], t_s + HEARD_HOLD_S))
-        n = self.store.apply(delta)
+            self._on_air(part.origin, part.from_excl, part.to_incl, t_s + HEARD_HOLD_S)
+            cur = self.store.version_vector().get(part.origin, 0)
+            if part.from_excl > cur:
+                pk = self.parked.setdefault(part.origin, {})
+                if len(pk) < self.cfg.park_parts:
+                    pk[part.from_excl] = part  # после пропуска — отложить до его заполнения
+                # пропуск обнаружен сразу (доставка от одного борта — по порядку):
+                # дозапросить у отправителя только его, не дожидаясь срока ожидания
+                gap_end = min(pk) if pk else part.from_excl
+                prev = self.nacked.get(part.origin)
+                if prev is None or prev[0] != (cur, gap_end) or t_s - prev[1] > self.rto:
+                    self.nacked[part.origin] = ((cur, gap_end), t_s)
+                    nacks[part.origin] = (cur, gap_end)
+                    rq = self.req.get(part.origin)
+                    # дозапрос — тоже ожидаемый ответ: таймер не должен его повторить, но
+                    # ответ на него (одна-две части) ждётся недолго
+                    want = max(part.to_incl, self.peer_vv.get(src, (0, {}))[1]
+                               .get(part.origin, 0))
+                    if rq is not None:
+                        want = max(want, rq.want_to)
+                    self.req[part.origin] = Pending(want, t_s, t_s + self.cfg.nack_timeout_s,
+                                                    1 if rq is None else rq.tries, (src,), True)
+                continue
+            k = self.store.apply(Delta((part,))) + self._drain(part.origin)
+            n += k
+            rq = self.req.get(part.origin)
+            if k and rq is not None:
+                # данные по источнику идут — ответ в пути, срок ожидания продлевается
+                rq.deadline = max(rq.deadline, t_s + self.cfg.nack_timeout_s)
         if n:
             self.dirty = True
         mine = self.store.version_vector()
@@ -436,9 +507,25 @@ class Node:
             p = self.req.get(part.origin)
             if p is None or mine.get(part.origin, 0) < p.want_to:
                 continue
-            if p.tries == 1 and src in p.peers:
+            if p.tries == 1 and not p.nack and src in p.peers:
                 self._rtt_sample(t_s - p.t_sent)
             del self.req[part.origin]
+        if not nacks:
+            return []
+        return [Out("REQ", src, nacks, 8 + 14 * len(nacks))]
+
+    def _drain(self, origin: str) -> int:
+        pk = self.parked.get(origin)
+        n = 0
+        while pk:
+            cur = self.store.version_vector().get(origin, 0)
+            ready = [f for f in pk if f <= cur]
+            if not ready:
+                break
+            for f in sorted(ready):
+                n += self.store.apply(Delta((pk.pop(f),)))
+        if pk is not None and not pk:
+            del self.parked[origin]
         return n
 
     def _rtt_sample(self, r: float) -> None:

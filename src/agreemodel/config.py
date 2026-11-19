@@ -73,6 +73,10 @@ class NodeCfg:
     busy_recent_s: float = 0.05  # эфир «занят», если передача шла в последние столько секунд
     response_window_s: float = 0.01  # окно объединения запросов в одну рассылку дельты
     discover_s: float = 0.1  # сбор векторов новых соседей перед запросом (один ответчик)
+    nack_timeout_s: float = 0.25  # c1: срок ожидания ответа на дозапрос пропуска и продления
+    #                                 при поступлении данных (ответ — одна-две части)
+    max_part_bytes: int = 480  # c1: дельта режется на части не больше (одна часть — один пакет)
+    park_parts: int = 256  # c1: сколько частей после пропуска хранить до его заполнения
     push_own: bool = True  # сразу рассылать свои новые записи (pull — только для досылки)
     protocol: str = "c1"  # c1 — текущий обмен; c0 — обмен цикла 0 (для сравнения)
     track_lost_s: float = 4.0
@@ -109,6 +113,9 @@ class NetCfg:
     bandwidth_kbps: float = 500.0
     range_m: float = 3000.0
     medium: str = "per_node"  # per_node — свой канал у борта; shared — общая радиосреда
+    mtu_bytes: int = 512  # наибольший пакет канала; сообщение длиннее режется на пакеты
+    frag_overhead_bytes: int = 0  # служебные байты канального уровня на пакет
+    priority_kinds: list[str] = field(default_factory=lambda: ["DIGEST", "REQ"])
     partition: list[PartitionCfg] = field(default_factory=list)
 
 

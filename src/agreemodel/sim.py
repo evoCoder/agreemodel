@@ -84,73 +84,75 @@ class Simulation:
         return [i for i, u in self.world.uavs.items() if u.alive and i in self.nodes]
 
     # ------------------------------------------------------------------ обработка
-    def _deliver(self, t_end: float) -> None:
-        if self.c1:
-            self._deliver_c1(t_end)
-            return
-        net = self.net
-        for m in net.pop_until(t_end):
-            node = self.nodes[m.dst]
-            t = m.t_deliver
-            if m.kind == "DIGEST":
-                req = node.on_digest(t, m.payload)
-                if req:
-                    net.send(t, m.dst, m.src, "REQ", req, 8 + 10 * len(req))
-            elif m.kind == "REQ":
-                delta = node.on_request(m.payload)
-                if delta:
-                    net.send(t, m.dst, m.src, "DELTA", delta, delta.size)
-            elif m.kind == "DELTA":
-                node.on_delta(m.payload)
-
-    def _emit(self, t: float, i: int, out) -> float | None:
+    def _emit(self, t: float, i: int, out, on_done=None) -> bool:
         if out.dst is None:
-            return self.net.broadcast(t, i, out.kind, out.payload, out.size)
-        return self.net.send(t, i, out.dst, out.kind, out.payload, out.size)
+            return self.net.broadcast(t, i, out.kind, out.payload, out.size, on_done)
+        return self.net.send(t, i, out.dst, out.kind, out.payload, out.size, on_done)
+
+    def _emit_part(self, t: float, i: int, origin: str, f: int, to: int, out) -> None:
+        n = self.nodes[i]
+        lat_max = (self.sc.net.latency_ms + self.sc.net.jitter_ms) / 1e3
+        entry = n.note_queued(origin, f, to)
+        if not self._emit(t, i, out, on_done=lambda end: n.note_sent(entry, end + lat_max)):
+            entry[2] = t  # некому передавать — не держать
 
     def _timers(self, t: float) -> None:
         """Сроки узлов: отправка объединённых ответов и повторные запросы."""
-        lat_max = (self.sc.net.latency_ms + self.sc.net.jitter_ms) / 1e3
         for i in self.alive():
             n = self.nodes[i]
             for origin, f, to, out in n.flush(t):
-                end = self._emit(t, i, out)
-                if end is not None:
-                    n.note_sent(origin, f, to, end + lat_max)
+                self._emit_part(t, i, origin, f, to, out)
             if n.hold_due(t) or any(p.deadline <= t + 1e-9 for p in n.req.values()):
-                for out in n.request_due(t, busy=self.net.channel_busy(i, t, self.sc.node.busy_recent_s)):
+                busy = self.net.channel_busy(i, t, self.sc.node.busy_recent_s)
+                for out in n.request_due(t, busy=busy):
                     self._emit(t, i, out)
 
-    def _deliver_c1(self, t_end: float) -> None:
-        """Доставка по времени; сроки узлов срабатывают в свой момент между сообщениями."""
+    def _deliver(self, t_end: float) -> None:
+        """События сети и сроки узлов по времени до t_end включительно."""
         net = self.net
         while True:
-            due = [dl for i in self.alive() if (dl := self.nodes[i].next_timer()) is not None]
-            t_timer = min(due) if due else None
-            t_msg = net._q[0].t_deliver if net._q else None
-            if t_timer is not None and t_timer <= t_end and (t_msg is None or t_timer <= t_msg):
+            t_timer = None
+            if self.c1:
+                due = [dl for i in self.alive() if (dl := self.nodes[i].next_timer()) is not None]
+                t_timer = min(due) if due else None
+            t_net = net.next_time()
+            if t_timer is not None and t_timer <= t_end and (t_net is None or t_timer <= t_net):
                 self._timers(t_timer)
                 continue
-            if t_msg is None or t_msg > t_end:
+            if t_net is None or t_net > t_end:
                 break
-            m = next(net.pop_until(t_msg), None)
+            m = net.step(t_net)
             if m is None:
                 continue
             node = self.nodes[m.dst]
             t = m.t_deliver
-            if m.kind == "DIGEST":
-                for out in node.on_digest_c1(t, m.src, self.nodes[m.src].uid, m.payload):
-                    self._emit(t, m.dst, out)
-            elif m.kind == "REQ":
-                node.on_request_c1(t, m.payload)
-            elif m.kind == "DELTA":
-                node.on_delta_c1(t, m.src, m.payload)
+            if self.c1:
+                if m.kind == "DIGEST":
+                    for out in node.on_digest_c1(t, m.src, self.nodes[m.src].uid, m.payload):
+                        self._emit(t, m.dst, out)
+                elif m.kind == "REQ":
+                    node.on_request_c1(t, m.payload)
+                elif m.kind == "DELTA":
+                    for out in node.on_delta_c1(t, m.src, m.payload):
+                        self._emit(t, m.dst, out)
+            else:
+                if m.kind == "DIGEST":
+                    req = node.on_digest(t, m.payload)
+                    if req:
+                        net.send(t, m.dst, m.src, "REQ", req, 8 + 10 * len(req))
+                elif m.kind == "REQ":
+                    delta = node.on_request(m.payload)
+                    if delta:
+                        net.send(t, m.dst, m.src, "DELTA", delta, delta.size)
+                elif m.kind == "DELTA":
+                    node.on_delta(m.payload)
 
     def _event(self, t: float) -> None:
         while self.events and self.events[0].t_s <= t:
             e = self.events.pop(0)
             if e.kind == "fail" and e.uav in self.world.uavs:
                 self.world.uavs[e.uav].alive = False
+                self.net.drop_queue(e.uav)
             elif e.kind == "join":
                 self._spawn(e.uav)
 
@@ -191,6 +193,9 @@ class Simulation:
             self.net.alive = set(alive)
             self.net.positions = {i: (self.world.uavs[i].x, self.world.uavs[i].y) for i in alive}
             t_us = EPOCH_US + int(round(t1 * 1e6))
+            # сначала — все события сети до конца шага, затем передачи этого шага
+            self._deliver(t1)
+            self.net.kick(t1)
             if not settling and t1 + 1e-9 >= next_frame:
                 next_frame += frame_dt
                 for i in alive:
@@ -202,8 +207,10 @@ class Simulation:
                     n.next_publish = t1 + sc.node.publish_period_s
                     s = self.sensors[i]
                     n.publish(t_us, s.nav_estimate(self.world.uavs[i]), s.nav_sigma)
-                    if self.c1 and (out := n.push_out()) is not None:
-                        self._emit(t1, i, out)
+                    if self.c1:
+                        for out in n.push_out():
+                            part = out.payload.parts[0]
+                            self._emit_part(t1, i, part.origin, part.from_excl, part.to_incl, out)
                 if t1 + 1e-9 >= n.next_gossip:
                     n.next_gossip += sc.node.gossip_period_s
                     if self.c1:
@@ -212,7 +219,6 @@ class Simulation:
                         vv = n.store.version_vector()
                         for j in self.net.neighbours(i, t1):
                             self.net.send(t1, i, j, "DIGEST", vv, 8 + 10 * len(vv))
-            self._deliver(t1)
             for i in alive:
                 n = self.nodes[i]
                 if t1 + 1e-9 >= n.next_picture:
@@ -330,7 +336,11 @@ class Simulation:
                     "kbps_per_uav": round(self.net.bytes_sent * 8 / 1e3 / self.sc.run.duration_s
                                           / max(1, self.sc.swarm.n_uav), 1),
                     "msgs_sent": self.net.msgs_sent, "msgs_lost": self.net.msgs_lost,
-                    "deliveries": self.net.deliveries},
+                    "deliveries": self.net.deliveries,
+                    # доля времени, когда эфир занят (для общей среды — загрузка канала)
+                    "air_busy_pct": round(100 * self.net.air_s / self.sc.run.duration_s
+                                          / (1 if self.sc.net.medium == "shared"
+                                             else max(1, self.sc.swarm.n_uav)), 1)},
         }
 
 
