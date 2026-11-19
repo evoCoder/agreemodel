@@ -52,12 +52,25 @@ class Result:
 
 
 class Simulation:
-    def __init__(self, sc: Scenario) -> None:
+    """Прогон сценария.
+
+    Интерфейс для веб-интерфейса и адаптеров (сохраняется между циклами):
+    ``on_sample(sim, t, alive)`` — вызывается в каждый момент выборки показателей;
+    в нём можно читать ``sim.world``, ``sim.nodes[i].picture`` (объекты с ``members``,
+    ``conflict``), ``sim.nodes[i].truth_of``, ``sim.components(alive, t)`` — подгруппы
+    связи. Вызов только читает состояние и на результат модели не влияет.
+    """
+
+    def __init__(self, sc: Scenario, on_sample=None) -> None:
         self.sc = sc
+        self.on_sample = on_sample
+        # генераторы засеваются целыми числами: засев числом с плавающей точкой идёт через
+        # hash(), а он зависит от разрядности платформы (64 бита — Linux/Windows, 32 бита —
+        # Pyodide в браузере), и один seed давал разные прогоны в разных средах
         root = random.Random(sc.run.seed)
-        self.world = World(sc.swarm, sc.objects, random.Random(root.random()))
-        self.net = Network(sc.net, random.Random(root.random()))
-        self._sensor_seed = random.Random(root.random())
+        self.world = World(sc.swarm, sc.objects, random.Random(root.getrandbits(64)))
+        self.net = Network(sc.net, random.Random(root.getrandbits(64)))
+        self._sensor_seed = random.Random(root.getrandbits(64))
         self.nodes: dict[int, Node] = {}
         self.sensors: dict[int, Sensor] = {}
         for i in range(sc.swarm.n_uav):
@@ -78,7 +91,7 @@ class Simulation:
         u = self.world.uavs[i]
         self.nodes[i] = Node(i, u.uid, self.sc.node, self.sc.fusion)
         self.sensors[i] = Sensor(self.sc.sensor, self.sc.nav,
-                                 random.Random(self._sensor_seed.random() + i))
+                                 random.Random((self._sensor_seed.getrandbits(64) << 8) | i))
 
     def alive(self) -> list[int]:
         return [i for i, u in self.world.uavs.items() if u.alive and i in self.nodes]
@@ -190,6 +203,8 @@ class Simulation:
                 self._event(t0)
             self.world.step(dt)
             alive = self.alive()
+            for i in alive:
+                self.sensors[i].nav.step(dt)  # ошибка навигации без ГНСС меняется во времени
             self.net.alive = set(alive)
             self.net.positions = {i: (self.world.uavs[i].x, self.world.uavs[i].y) for i in alive}
             t_us = EPOCH_US + int(round(t1 * 1e6))
@@ -237,6 +252,9 @@ class Simulation:
                 print(f"  t = {t1:7.1f} с, записей у U01: {len(self.nodes[0].store)}", flush=True)
         return Result(self._summary(), self.series)
 
+    def components(self, alive: list[int], t: float) -> list[list[int]]:
+        return self._components(alive, t)
+
     def _components(self, alive: list[int], t: float) -> list[list[int]]:
         seen: set[int] = set()
         comps = []
@@ -273,6 +291,8 @@ class Simulation:
             "objects_U01": len(n0.picture.objects) if n0.picture else 0,
             "kbytes_sent": round(self.net.bytes_sent / 1024, 1),
         })
+        if self.on_sample is not None:
+            self.on_sample(self, t, alive)
 
     # ------------------------------------------------------------------ итоги
     def _summary(self) -> dict[str, Any]:

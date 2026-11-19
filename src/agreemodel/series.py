@@ -73,6 +73,8 @@ def _one(args: tuple[str, dict[str, str], list[str], int]) -> dict[str, Any]:
     row["duplicates"] = s["picture"]["duplicates"]
     row["truth_detected"] = s["picture"]["truth_detected"]
     row["false_objects"] = s["picture"]["false_objects"]
+    row["mixed_objects"] = s["picture"]["mixed_objects"]
+    row["objects"] = s["picture"]["objects"]
     return row
 
 

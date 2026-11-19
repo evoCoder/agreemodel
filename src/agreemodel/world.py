@@ -105,7 +105,8 @@ class World:
     def slot(self, i: int) -> tuple[float, float]:
         cols = self.cfg.columns
         rows = max(1, math.ceil(self.cfg.n_uav / cols))
-        r, c = divmod(i % (cols * rows), cols)
+        # присоединяющийся борт (номер ≥ n_uav) занимает новую ячейку за строем
+        r, c = divmod(i, cols)
         sp = self.cfg.spacing_m
         return (-(r - (rows - 1) / 2) * sp, (c - (cols - 1) / 2) * sp)
 
