@@ -9,21 +9,30 @@
 </head>
 <body>
 <header>
-  <h1>«Согласие» — симулятор согласования информационной картины между БВС</h1>
-  <p class="sub">Лот 1, ФТ № 1. Расчёт выполняется в этом браузере (Python в WebAssembly), сервер и регистрация не нужны.</p>
+  <h1>«Согласие» — согласование информационной картины между БВС</h1>
+  <p class="sub">Симулятор технологии. Лот 1, ФТ № 1. Расчёт выполняется в этом браузере — сервер и регистрация не нужны.</p>
+  <div class="story">
+    <h2>Что вы видите</h2>
+    <ol>
+      <li>Группа из 8 <span data-term="БВС">БВС</span> (<span data-term="борт">бортов</span>) летит в <span data-term="строй">строю</span> над местностью без <span data-term="ГНСС">ГНСС</span>. Каждый борт своим датчиком обнаруживает <span data-term="объект интереса">объекты интереса</span> и ведёт <span data-term="информационная картина">информационную картину</span> — перечень объектов, их положение и состояние группы. Борта обмениваются данными по радио, поэтому картина у всех общая.</li>
+      <li>При <span data-term="разрыв связи">разрыве связи</span> группа делится на <span data-term="подгруппа связи">подгруппы</span>, которые не слышат друг друга (до 15 мин). Каждая подгруппа продолжает работу и накапливает свои <span data-term="сведения">сведения</span> — картины расходятся.</li>
+      <li>После восстановления связи технология «Согласие» <span data-term="восстановление согласованности">восстанавливает согласованность</span>: картины всех бортов снова одинаковы, без <span data-term="потери записей">потерь сведений</span> и без <span data-term="логический дубликат">логических дубликатов</span>. Требование ФТ № 1 — <b>не более 1,5 с</b>.</li>
+    </ol>
+    <p class="how">Выберите сценарий слева и нажмите <b>«Запустить»</b>. Пояснение к любому подчёркнутому термину и к знаку <span class="hint-i static">?</span> — при наведении.</p>
+  </div>
   <p class="ver" id="ver">Загрузка среды расчёта…</p>
 </header>
 
 <main>
   <section class="col-left">
-    <h2>1. Сценарий самопроверки</h2>
+    <h2>1. Сценарий</h2>
     <div id="presets"></div>
 
     <h2>2. Исходные данные</h2>
     <form id="form" autocomplete="off">
       <fieldset>
-        <legend>Разрыв связи</legend>
-        <label>Состав подгрупп
+        <legend><span data-term="разрыв связи">Разрыв связи</span></legend>
+        <label data-hint="split">Состав подгрупп
           <select name="split">
             <option value="none">нет разрыва</option>
             <option value="4+4">4 + 4</option>
@@ -31,30 +40,30 @@
             <option value="2+2+4">2 + 2 + 4</option>
             <option value="custom" disabled>по сценарию</option>
           </select></label>
-        <label>Начало, с <input name="gap_start" type="number" min="0" step="1"></label>
-        <label>Конец, с <input name="gap_end" type="number" min="0" step="1"></label>
+        <label data-hint="gap_start">Начало, с <input name="gap_start" type="number" min="0" step="1"></label>
+        <label data-hint="gap_end">Конец, с <input name="gap_end" type="number" min="0" step="1"></label>
         <p class="hint" id="gap_hint"></p>
       </fieldset>
       <fieldset>
         <legend>Канал связи</legend>
-        <label>Потери сообщений, % <input name="loss" type="number" min="0" max="60" step="1"></label>
-        <label>Задержка, мс <input name="latency" type="number" min="1" max="1000" step="1"></label>
-        <label>Полоса, кбит/с <input name="bandwidth" type="number" min="16" max="10000" step="1"></label>
+        <label data-hint="loss">Потери сообщений, % <input name="loss" type="number" min="0" max="60" step="1"></label>
+        <label data-hint="latency">Задержка, мс <input name="latency" type="number" min="1" max="1000" step="1"></label>
+        <label data-hint="bandwidth">Полоса, кбит/с <input name="bandwidth" type="number" min="16" max="10000" step="1"></label>
       </fieldset>
       <fieldset>
         <legend>Борты и объекты</legend>
-        <label>Ошибка навигации без ГНСС, м <input name="nav_sigma" type="number" min="0" max="50" step="0.5"></label>
-        <label>Объектов интереса <input name="objects" type="number" min="0" max="300" step="1"></label>
-        <label><input name="fail_on" type="checkbox"> Отказ борта
-          <select name="fail_uav"></select> на <input name="fail_t" type="number" min="0" step="1" class="short"> с</label>
-        <label><input name="join_on" type="checkbox"> Присоединение нового борта на
-          <input name="join_t" type="number" min="0" step="1" class="short"> с</label>
+        <label data-hint="nav_sigma">Ошибка навигации без ГНСС, м <input name="nav_sigma" type="number" min="0" max="50" step="0.5"></label>
+        <label data-hint="objects">Объектов интереса <input name="objects" type="number" min="0" max="300" step="1"></label>
+        <label data-hint="fail"><span><input name="fail_on" type="checkbox"> Отказ борта</span>
+          <span><select name="fail_uav"></select> на <input name="fail_t" type="number" min="0" step="1" class="short"> с</span></label>
+        <label data-hint="join"><span><input name="join_on" type="checkbox"> Присоединение нового борта</span>
+          <span>на <input name="join_t" type="number" min="0" step="1" class="short"> с</span></label>
       </fieldset>
       <fieldset>
         <legend>Прогон</legend>
-        <label>Длительность, с <input name="duration" type="number" min="30" max="3600" step="10"></label>
-        <label>Начальное число (seed) <input name="seed" type="number" min="0" step="1"></label>
-        <label>Картина какого борта показывать <select name="view"></select></label>
+        <label data-hint="duration">Длительность, с <input name="duration" type="number" min="30" max="3600" step="10"></label>
+        <label data-hint="seed">Начальное число (seed) <input name="seed" type="number" min="0" step="1"></label>
+        <label data-hint="view">Картина какого борта на карте <select name="view"></select></label>
       </fieldset>
       <details>
         <summary>Все параметры модели</summary>
@@ -70,34 +79,48 @@
   </section>
 
   <section class="col-right">
-    <h2>3. Показатели ФТ № 1</h2>
+    <h2>3. Результат</h2>
+    <div id="cards" class="cards"></div>
+
+    <h2>4. Что происходит</h2>
+    <p class="hint">Воспроизведение полёта: вверху — время и события, слева — <span data-term="строй">строй</span> и радиосвязь между бортами, справа — <span data-term="картина борта">картины бортов</span>.</p>
+    <canvas id="story" width="1040" height="470"></canvas>
+    <div class="slider">
+      <button id="play" disabled>▶</button>
+      <input id="time" type="range" min="0" max="0" value="0" disabled>
+      <span id="tlabel"></span>
+      <label class="speed">скорость <select id="speed"><option value="0">авто</option><option value="5">×5</option><option value="10">×10</option><option value="20">×20</option><option value="50">×50</option></select></label>
+    </div>
+
+    <h3>Карта маршрута</h3>
+    <canvas id="map" width="1040" height="380"></canvas>
+    <div class="legend">
+      <span><i class="d ok"></i>объект в картине борта (верно)</span>
+      <span><i class="d dup"></i><span data-term="логический дубликат">логический дубликат</span></span>
+      <span><i class="d false"></i>ложный объект (реального нет)</span>
+      <span><i class="d mixed"></i>смешанный объект (два реальных записаны как один)</span>
+      <span><i class="d truth-on"></i><span data-term="объект эталона">объект эталона</span>, вошедший в картину</span>
+      <span><i class="d truth"></i>объект эталона, ещё не обнаруженный</span>
+      <span><i class="d swarm"></i>путь группы; пунктир — зона обзора датчиков</span>
+    </div>
+
+    <h2>5. Все показатели ФТ № 1</h2>
     <table id="metrics"><tbody><tr><td class="muted">Запустите сценарий.</td></tr></tbody></table>
 
-    <h2>4. Картина и связь</h2>
-    <canvas id="map" width="720" height="460"></canvas>
-    <div class="legend">
-      <span><i class="d ok"></i>объект картины — верно</span>
-      <span><i class="d dup"></i>дубликат</span>
-      <span><i class="d false"></i>ложный</span>
-      <span><i class="d mixed"></i>смешанный</span>
-      <span><i class="d truth"></i>объект эталона (истина)</span>
-      <span><i class="d swarm"></i>рой и его путь, пунктир — зона обзора</span>
-    </div>
-    <div class="slider"><button id="play" disabled>▶</button>
-      <input id="time" type="range" min="0" max="0" value="0" disabled><span id="tlabel"></span></div>
-
-    <h2>5. Ход прогона</h2>
-    <canvas id="chart" width="720" height="260"></canvas>
-
-    <h2>6. Результаты</h2>
-    <div class="buttons">
-      <button id="dl_summary" disabled>summary.json</button>
-      <button id="dl_series" disabled>series.csv</button>
-      <button id="dl_scenario" disabled>scenario.json</button>
-    </div>
-    <p class="hint">Те же файлы и поля, что в журнале циклов разработки (<code>journal/cN/</code>).</p>
+    <details class="expert" id="expert">
+      <summary>Для специалистов: канал связи, служебные величины, выгрузка результатов</summary>
+      <canvas id="chart" width="1040" height="260"></canvas>
+      <table id="tech"><tbody></tbody></table>
+      <div class="buttons">
+        <button id="dl_summary" disabled>summary.json</button>
+        <button id="dl_series" disabled>series.csv</button>
+        <button id="dl_scenario" disabled>scenario.json</button>
+      </div>
+      <p class="hint">Те же файлы и поля, что в журнале циклов разработки (<code>journal/cN/</code>).</p>
+    </details>
   </section>
 </main>
+<div id="tip" role="tooltip"></div>
 <footer id="foot"></footer>
 <script type="module" src="app.js"></script>
 </body>

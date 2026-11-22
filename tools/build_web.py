@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Среда исполнения (Pyodide, numpy):")
     spec = fetch_vendor(out / "pyodide")
-    for name in ("index.html", "app.js", "worker.js", "presets.js", "style.css"):
+    for name in ("index.html", "app.js", "worker.js", "presets.js", "terms.js", "style.css"):
         shutil.copy2(WEB / name, out / name)
     (out / "py").mkdir()
     app_zip(out / "py" / "app.zip")
