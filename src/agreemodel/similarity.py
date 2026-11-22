@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+from operator import mul
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -109,7 +110,7 @@ def pair_features(obj: PicObject, trk: TrackView, members: list[Record], t_ref: 
     rival = D2_PREFILTER + 1
     for o in rivals:
         if o.rec is trk.rec or not (o.t0 <= trk.t1 and trk.t0 <= o.t1):
-            continue
+            continue  # rivals может содержать и не пересекающиеся по времени треки
         So = (obj.P[0] + o.P[0], obj.P[1] + o.P[1], obj.P[2] + o.P[2])
         rival = min(rival, _mahal2(o.x - obj.x, o.y - obj.y, So))
     ax, ay, ag = at(md)
@@ -150,6 +151,23 @@ def track_views_by_origin(tracks: list[Record], t_ref: int, cfg: FusionCfg) -> d
     return out
 
 
+def overlapping_by_track(by_origin: dict[str, list[TrackView]]) -> dict[tuple[str, str], list[TrackView]]:
+    """Для каждого трека — треки того же борта, пересекающиеся с ним по времени (сам трек
+    не входит). Развёртка по началу интервала: O(n log n + число пересечений)."""
+    out: dict[tuple[str, str], list[TrackView]] = {}
+    for views in by_origin.values():
+        vs = sorted(views, key=lambda v: (v.t0, v.rec.key))
+        active: list[TrackView] = []
+        for v in vs:
+            active = [a for a in active if a.t1 >= v.t0]
+            lst = out.setdefault(v.rec.gkey, [])
+            for a in active:
+                lst.append(a)
+                out[a.rec.gkey].append(v)
+            active.append(v)
+    return out
+
+
 class Model:
     """Перцептрон: стандартизация → [Wx + b, ReLU]* → Wx + b → сигмоида. Веса — int8 · масштаб."""
 
@@ -165,20 +183,35 @@ class Model:
             s = float(L["scale"])
             W = [[q * s for q in row] for row in L["w_int8"]]
             self.layers.append((W, [float(v) for v in L["b"]]))
+        # стандартизация входа внесена в первый слой: W' = W / σ, b' = b − W'·μ
+        W0, b0 = self.layers[0]
+        W0s = [tuple(w / sc for w, sc in zip(row, self.scale, strict=True)) for row in W0]
+        b0s = [bb - sum(w * m for w, m in zip(row, self.mean, strict=True)) for row, bb in zip(W0s, b0, strict=True)]
+        self._fast = [(W0s, b0s)] + [([tuple(r) for r in W], b) for W, b in self.layers[1:]]
+        self._cache: dict[tuple[float, ...], float] = {}
 
     @classmethod
     def load(cls, path: str | Path = DEFAULT_MODEL) -> Model:
         return cls(json.loads(Path(path).read_text("utf-8")))
 
     def prob(self, f: list[float]) -> float:
-        h = [(v - m) / s for v, m, s in zip(f, self.mean, self.scale, strict=True)]
-        last = len(self.layers) - 1
-        for i, (W, b) in enumerate(self.layers):
-            z = [sum(w * x for w, x in zip(row, h, strict=True)) + bb for row, bb in zip(W, b, strict=True)]
-            h = z if i == last else [v if v > 0 else 0.0 for v in z]
+        """Вероятность «тот же объект» на сетке P_STEP. Чистая функция признаков: результат
+        запоминается (картина пересчитывается часто, большинство пар не меняется)."""
+        key = tuple(f)
+        p = self._cache.get(key)
+        if p is not None:
+            return p
+        if len(self._cache) > 200_000:
+            self._cache.clear()
+        h = key
+        last = len(self._fast) - 1
+        for i, (W, b) in enumerate(self._fast):
+            z = [sum(map(mul, row, h)) + bb for row, bb in zip(W, b)]
+            h = z if i == last else [v if v > 0.0 else 0.0 for v in z]  # noqa: FURB136 — быстрее max
         z = max(-30.0, min(30.0, h[0]))
-        p = 1.0 / (1.0 + math.exp(-z))
-        return round(p / P_STEP) * P_STEP
+        p = round(1.0 / (1.0 + math.exp(-z)) / P_STEP) * P_STEP
+        self._cache[key] = p
+        return p
 
 
 _CACHE: dict[str, Model] = {}
@@ -206,12 +239,12 @@ class AiAssociator:
     def begin(self, tracks: list[Record], t_ref: int) -> None:
         self.recs = {r.gkey: r for r in tracks}
         self.t_ref = t_ref
-        self.by_origin = track_views_by_origin(tracks, t_ref, self.cfg)
+        self.rivals = overlapping_by_track(track_views_by_origin(tracks, t_ref, self.cfg))
 
     def cost(self, obj: PicObject, trk: TrackView) -> float | None:
         members = [self.recs[g] for g in obj.members]
         f = pair_features(obj, trk, members, self.t_ref, self.cfg,
-                          self.by_origin.get(trk.rec.origin, ()))
+                          self.rivals.get(trk.rec.gkey, ()))
         if f is None:
             return None
         return round(1.0 - self.model.prob(f), 4)

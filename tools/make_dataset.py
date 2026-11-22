@@ -27,7 +27,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agreemodel.config import FusionCfg
 from agreemodel.fusion import PicObject, TrackView, _track_state, ci_fuse
-from agreemodel.similarity import FEATURES, pair_features, track_views_by_origin
+from agreemodel.similarity import (
+    FEATURES,
+    overlapping_by_track,
+    pair_features,
+    track_views_by_origin,
+)
 
 
 def pairs_of_run(run: dict, cfg: FusionCfg) -> tuple[list[list[float]], list[int], list[int], list[Counter]]:
@@ -36,7 +41,7 @@ def pairs_of_run(run: dict, cfg: FusionCfg) -> tuple[list[list[float]], list[int
     t_ref = max([r.data["t1"] for r in tracks] + [r.t_us for r in run["records"] if r.key == "uav"])
     tracks.sort(key=lambda r: (r.data["t0"], r.origin, r.key))
     recs = {r.gkey: r for r in tracks}
-    by_origin = track_views_by_origin(tracks, t_ref, cfg)
+    rivals = overlapping_by_track(track_views_by_origin(tracks, t_ref, cfg))
     cell = cfg.cell_m
     objs: list[PicObject] = []
     otruth: list[Counter] = []
@@ -58,7 +63,7 @@ def pairs_of_run(run: dict, cfg: FusionCfg) -> tuple[list[list[float]], list[int
         for k in sorted({k for gx in (cx - 1, cx, cx + 1) for gy in (cy - 1, cy, cy + 1)
                          for k in grid.get((gx, gy), ())}):
             o = objs[k]
-            f = pair_features(o, tv, [recs[g] for g in o.members], t_ref, cfg, by_origin[r.origin])
+            f = pair_features(o, tv, [recs[g] for g in o.members], t_ref, cfg, rivals.get(r.gkey, ()))
             if f is None:
                 continue
             lab = int(tid is not None and otruth[k].most_common(1)[0][0] == tid)
