@@ -1,0 +1,13 @@
+{
+  "_comment": "Среда исполнения Python в браузере. Файлы скачиваются при сборке, проверяются по SHA-256 и размещаются рядом со страницей; во время работы страница во внешние сети не обращается.",
+  "pyodide": "314.0.8",
+  "base_url": "https://cdn.jsdelivr.net/pyodide/v314.0.8/full/",
+  "files": {
+    "pyodide.mjs": "1bb8cc14f9405aaa7cd4e00c12edd0a8539de9cc026618d6ee5a9663f367dc70",
+    "pyodide.asm.mjs": "22514b8be6980e28a02c8b1d6387ce8dfe666fc4edf8d547cff5dce29ff4d972",
+    "pyodide.asm.wasm": "e14d49ceca9b4a0e274ea918f3a898de2d3880b6e5573a6cfe1a2267ecc70329",
+    "python_stdlib.zip": "2bd3394a145bfbbe5bbc9d9d6ab9136abbb986c6fef6c142b3a2962227aa5c28",
+    "pyodide-lock.json": "5dc2fc119108bc148c7457dc86e7675b5c87e1cafd420b9c34c1eaef7b36c010",
+    "numpy-2.4.6-cp314-cp314-pyemscripten_2026_0_wasm32.whl": "a292c1f5d7d8a2208cd5e94fc467604c131cabcd2fc14fed6eefde121e7fabdf"
+  }
+}

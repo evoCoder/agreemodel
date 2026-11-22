@@ -43,12 +43,14 @@ class Restore:
     kind: str
     target: dict[str, int] | None = None
     store_conv_s: float | None = None
+    uav: int | None = None  # присоединяющийся борт: отсчёт — после его появления в группе
 
 
 @dataclass
 class Result:
     summary: dict[str, Any]
     series: list[dict[str, Any]] = field(default_factory=list)
+    sim: Any = field(default=None, repr=False, compare=False)
 
 
 class Simulation:
@@ -64,6 +66,8 @@ class Simulation:
     def __init__(self, sc: Scenario, on_sample=None) -> None:
         self.sc = sc
         self.on_sample = on_sample
+        self._first_seen: dict[tuple[int, str], float] = {}
+        self._fixed: dict[tuple[int, str], float] = {}
         # генераторы засеваются целыми числами: засев числом с плавающей точкой идёт через
         # hash(), а он зависит от разрядности платформы (64 бита — Linux/Windows, 32 бита —
         # Pyodide в браузере), и один seed давал разные прогоны в разных средах
@@ -76,7 +80,7 @@ class Simulation:
         for i in range(sc.swarm.n_uav):
             self._spawn(i)
         self.restores = [Restore(p.end_s, "partition_end") for p in sc.net.partition]
-        self.restores += [Restore(e.t_s, f"join U{e.uav + 1:02d}")
+        self.restores += [Restore(e.t_s, f"join U{e.uav + 1:02d}", uav=e.uav)
                           for e in sc.event if e.kind == "join"]
         self.events = sorted(sc.event, key=lambda e: e.t_s)
         self.series: list[dict[str, Any]] = []
@@ -145,7 +149,7 @@ class Simulation:
                         self._emit(t, m.dst, out)
                 elif m.kind == "REQ":
                     node.on_request_c1(t, m.payload)
-                elif m.kind == "DELTA":
+                elif m.kind in ("DELTA", "FIX"):
                     for out in node.on_delta_c1(t, m.src, m.payload):
                         self._emit(t, m.dst, out)
             else:
@@ -172,7 +176,7 @@ class Simulation:
     def _restore_check(self, t: float) -> None:
         alive = self.alive()
         for r in self.restores:
-            if r.t_s > t:
+            if r.t_s > t or (r.uav is not None and r.uav not in alive):
                 continue
             if r.target is None:
                 tgt: dict[str, int] = {}
@@ -215,13 +219,17 @@ class Simulation:
                 next_frame += frame_dt
                 for i in alive:
                     dets = self.sensors[i].frame(t_us, self.world.uavs[i], self.world)
+                    for d in dets:
+                        if d.truth_id is not None:
+                            self._first_seen.setdefault((i, d.truth_id), t1)
                     self.nodes[i].on_frame(t1, t_us, dets)
             for i in alive:
                 n = self.nodes[i]
                 if not settling and t1 + 1e-9 >= n.next_publish:
                     n.next_publish = t1 + sc.node.publish_period_s
                     s = self.sensors[i]
-                    n.publish(t_us, s.nav_estimate(self.world.uavs[i]), s.nav_sigma)
+                    if n.publish(t_us, s.nav_estimate(self.world.uavs[i]), s.nav_sigma, t1):
+                        self._note_fixed(i, t1)
                     if self.c1:
                         for out in n.push_out():
                             part = out.payload.parts[0]
@@ -250,7 +258,18 @@ class Simulation:
                 self._sample(t1, alive)
             if progress and step % int(60 / dt) == 0:
                 print(f"  t = {t1:7.1f} с, записей у U01: {len(self.nodes[0].store)}", flush=True)
-        return Result(self._summary(), self.series)
+        return Result(self._summary(), self.series, self)
+
+    def _note_fixed(self, i: int, t: float) -> None:
+        """Задержка фиксации нового наблюдения: от первого обнаружения объекта бортом до
+        записи трека этого объекта в хранилище борта (после чего запись рассылается и
+        входит в картину)."""
+        for tid in set(self.nodes[i].truth_of.values()):
+            if tid is None or (i, tid) in self._fixed:
+                continue
+            t0 = self._first_seen.get((i, tid))
+            if t0 is not None:
+                self._fixed[(i, tid)] = t - t0
 
     def components(self, alive: list[int], t: float) -> list[list[int]]:
         return self._components(alive, t)
@@ -349,6 +368,15 @@ class Simulation:
                 "mixed_objects": mixed,
                 "conflicts_marked": pic.n_conflicts,
             },
+            # задержка фиксации нового наблюдения (Р1.8), с: от кадра, подтвердившего
+            # новый трек, до записи в хранилище борта
+            "fix_latency_s": _stats([x for i in alive for x in self.nodes[i].fix_s]),
+            # от первого обнаружения объекта бортом до записи его трека — включает
+            # подтверждение трека (зависит от вероятности обнаружения на краю обзора)
+            "detect_to_fix_s": _stats(list(self._fixed.values())),
+            # объём хранилища борта (оценка байт записей), КБ — для требований к ОЗУ
+            "store_kbytes_max": round(max(sum(r.size for r in self.nodes[i].store.records())
+                                          for i in alive) / 1024, 1),
             "net": {"medium": self.sc.net.medium,
                     "protocol": self.sc.node.protocol,
                     "mbytes_sent": round(self.net.bytes_sent / 2**20, 2),
@@ -362,6 +390,13 @@ class Simulation:
                                           / (1 if self.sc.net.medium == "shared"
                                              else max(1, self.sc.swarm.n_uav)), 1)},
         }
+
+
+def _stats(v: list[float]) -> dict[str, float | None]:
+    if not v:
+        return {"median": None, "p95": None, "max": None}
+    return {"median": round(_pct(v, 0.5), 3), "p95": round(_pct(v, 0.95), 3),
+            "max": round(max(v), 3)}
 
 
 def run(sc: Scenario, progress: bool = False) -> Result:

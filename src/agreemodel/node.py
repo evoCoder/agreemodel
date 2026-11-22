@@ -79,6 +79,7 @@ class LocalTrack:
     hits: int = 1
     status: str = "A"  # A — активен, L — потерян, M — объединён с другим своим треком
     merged_into: int | None = None
+    t_confirm_s: float | None = None  # кадр, в котором трек набрал confirm_hits
     changed: bool = True
     published: bool = False
     truth: Counter = field(default_factory=Counter)  # только для оценки по эталону
@@ -114,7 +115,7 @@ class Node:
         self.rto = ncfg.rto_init_s
         self.rtt_samples: list[float] = []
         # источник → (от версии, до версии (0 — всё), срок отправки)
-        self.outbox: dict[str, tuple[int, int, float]] = {}
+        self.outbox: dict[str, tuple[list[tuple[int, int]], float]] = {}
         # источник → диапазоны [от, до, «в эфире» до момента] (inf — своя часть в очереди)
         self.air: dict[str, list[list]] = {}
         self.parked: dict[str, dict[int, object]] = {}  # части после пропуска
@@ -126,6 +127,9 @@ class Node:
         self.published_frame_t: float | None = None  # первый записанный, не отражённый в картине
         self.quantum_s: list[float] = []
         self.compute_ms: list[float] = []
+        self.fix_s: list[float] = []
+        self._frame_t = 0.0
+        self._now_s = 0.0
         self.truth_of: dict[str, str | None] = {}  # ключ записи → объект эталона (оценка)
 
     # ------------------------------------------------------------------ сопровождение
@@ -139,6 +143,7 @@ class Node:
         return F @ tr.x, F @ tr.P @ F.T + Q
 
     def on_frame(self, t_s: float, t_us: int, dets: list[Detection]) -> None:
+        self._frame_t = t_s
         H = np.zeros((2, 4))
         H[0, 0] = H[1, 1] = 1.0
         active = [tr for tr in self.tracks if tr.status == "A"]
@@ -224,6 +229,8 @@ class Node:
         tr.P = IKH @ P @ IKH.T + K @ R @ K.T
         tr.t_us = t_us
         tr.hits += 1
+        if tr.hits == self.cfg.confirm_hits and tr.t_confirm_s is None:
+            tr.t_confirm_s = self._frame_t
         tr.class_log += np.log(np.maximum(np.array(d.class_p), 1e-6))
         tr.changed = True
         tr.truth[d.truth_id] += 1
@@ -262,7 +269,9 @@ class Node:
                            if tr.tid not in gone or tr.status == "M"]
 
     # ------------------------------------------------------------------ запись
-    def publish(self, t_us: int, own_xy: tuple[float, float], nav_sigma: float) -> int:
+    def publish(self, t_us: int, own_xy: tuple[float, float], nav_sigma: float,
+                t_s: float | None = None) -> int:
+        self._now_s = t_s if t_s is not None else self._frame_t
         n = 0
         nav_var = nav_sigma**2
         keep = []
@@ -280,6 +289,10 @@ class Node:
                     "cls": tr.class_p, "st": tr.status,
                     **({"into": f"trk/{tr.merged_into}"} if tr.status == "M" else {})})
                 self.truth_of[key] = tr.truth.most_common(1)[0][0]
+                if not tr.published and tr.t_confirm_s is not None:
+                    # задержка фиксации нового наблюдения: от кадра, подтвердившего трек,
+                    # до записи в хранилище (дальше запись рассылается и входит в картину)
+                    self.fix_s.append(self._now_s - tr.t_confirm_s)
                 tr.changed, tr.published = False, True
                 n += 1
             if tr.status in ("L", "M") and not tr.changed:
@@ -337,9 +350,9 @@ class Node:
         vv = self.store.version_vector()
         return Out("DIGEST", None, vv, 8 + 10 * len(vv))
 
-    def _part_out(self, part) -> Out:
+    def _part_out(self, part, kind: str = "DELTA") -> Out:
         d = Delta((part,))
-        return Out("DELTA", None, d, d.size)
+        return Out(kind, None, d, d.size)
 
     def push_out(self) -> list[Out]:
         """Свои записи после последней рассылки — широковещательными частями."""
@@ -446,7 +459,7 @@ class Node:
 
     def next_timer(self) -> float | None:
         """Ближайший срок: отправка ответа, повтор запроса, конец сбора векторов."""
-        ts = [dl for _, _, dl in self.outbox.values()]
+        ts = [dl for _, dl in self.outbox.values()]
         ts += [p.deadline for p in self.req.values()]
         if self.hold_until > 0.0:
             ts.append(self.hold_until)
@@ -465,34 +478,47 @@ class Node:
                 continue
             ob = self.outbox.get(origin)
             if ob is None:
-                self.outbox[origin] = (d, upto, t_s + self.cfg.response_window_s)
+                self.outbox[origin] = ([(d, upto)], t_s + self.cfg.response_window_s)
             else:
-                u = 0 if (ob[1] == 0 or upto == 0) else max(ob[1], upto)
-                self.outbox[origin] = (min(ob[0], d), u, ob[2])
+                ob[0].append((d, upto))
 
     def flush(self, t_s: float) -> list[tuple[str, int, int, Out]]:
         """Части, срок отправки которых наступил: (источник, от, до, сообщение).
 
-        Если диапазон по источнику уже в эфире (своя передача в очереди или в эфире,
-        или услышанная от соседа) и покрывает запрошенное начало, передаётся только
-        записанное после него."""
+        Запрошенные диапазоны по источнику объединяются; передаются только куски, которых
+        нет в эфире. Ограниченный диапазон (дозапрос пропуска) уходит как FIX — впереди
+        данных в очереди передачи, иначе пропуск ждал бы за всей очередью ответа."""
         res = []
         mine = self.store.version_vector()
         for origin in sorted(self.outbox):
-            d, upto, dl = self.outbox[origin]
+            ranges, dl = self.outbox[origin]
             if dl > t_s + 1e-9:
                 continue
             del self.outbox[origin]
-            hi = mine.get(origin, 0) if upto == 0 else min(upto, mine.get(origin, 0))
-            for a, b in self.uncovered(origin, d, hi, t_s):
-                parts = self.store.parts_for(origin, a, b, self.cfg.max_part_bytes)
-                for part in parts:
-                    res.append((origin, part.from_excl, part.to_incl, self._part_out(part)))
-                if len(parts) > 1:
-                    # замыкающая пустая часть (b, b]: если последняя часть потеряна,
-                    # получатель увидит пропуск по ней и дозапросит сразу
-                    end = DeltaPart(origin, b, b, ())
-                    res.append((origin, b, b, self._part_out(end)))
+            have = mine.get(origin, 0)
+            ivs = sorted((d, have if upto == 0 else min(upto, have), upto != 0)
+                         for d, upto in ranges)
+            merged: list[list] = []
+            for d, hi, fix in ivs:
+                if hi <= d:
+                    continue
+                if merged and d <= merged[-1][1]:
+                    m = merged[-1]
+                    m[1], m[2] = max(m[1], hi), m[2] and fix
+                else:
+                    merged.append([d, hi, fix])
+            for d, hi, fix in merged:
+                for a, b in self.uncovered(origin, d, hi, t_s):
+                    parts = self.store.parts_for(origin, a, b, self.cfg.max_part_bytes)
+                    kind = "FIX" if fix else "DELTA"
+                    for part in parts:
+                        res.append((origin, part.from_excl, part.to_incl,
+                                    self._part_out(part, kind)))
+                    if len(parts) > 1:
+                        # замыкающая пустая часть (b, b]: если последняя часть потеряна,
+                        # получатель увидит пропуск по ней и дозапросит сразу
+                        end = DeltaPart(origin, b, b, ())
+                        res.append((origin, b, b, self._part_out(end, kind)))
         return res
 
     def _on_air(self, origin: str, f: int, to: int, t_done: float) -> list:
@@ -501,12 +527,15 @@ class Node:
         lst.append(e)
         return e
 
-    def uncovered(self, origin: str, d: int, hi: int, t_s: float) -> list[tuple[int, int]]:
-        """Куски диапазона (d, hi], не покрытые тем, что сейчас в эфире или в очереди."""
+    def uncovered(self, origin: str, d: int, hi: int, t_s: float,
+                  queued_covers: bool = True) -> list[tuple[int, int]]:
+        """Куски диапазона (d, hi], не покрытые тем, что сейчас в эфире или в очереди
+        (queued_covers=False — своя часть, ещё стоящая в очереди, не покрывает)."""
         lst = self.air.get(origin)
         if lst:
             lst[:] = [e for e in lst if e[2] >= t_s]
-        ivs = sorted((f, to) for f, to, _ in (lst or ()) if to > d and f < hi)
+        ivs = sorted((f, to) for f, to, te in (lst or ()) if to > d and f < hi
+                     and (queued_covers or te != math.inf))
         out, x = [], d
         for f, to in ivs:
             if f > x:
