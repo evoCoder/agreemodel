@@ -1,8 +1,19 @@
 """Связка симулятора с веб-страницей (исполняется в браузере в Pyodide и нативно в тестах).
 
 Модель (`agreemodel`) не изменяется: здесь только сборка сценария из параметров страницы,
-снятие кадров для карты и передача хода выполнения. Показатели берутся из того же
-`summary`, что и в журнале циклов.
+снятие кадров для анимации через открытый вызов ядра ``on_sample`` и передача хода
+выполнения. Показатели берутся из того же ``summary``, что и в журнале циклов.
+
+Кадр (каждые ``frame_s`` модельного времени):
+  t, c       — время, центр группы;
+  uavs       — [номер, x, y, подгруппа, работает, объектов в картине, сведений, вариант картины];
+               «сведений» — число изменений, известных борту (сумма вектора версий хранилища);
+               «вариант картины» — номер различающегося набора объектов картины
+               (у бортов с одинаковым набором — один номер);
+  edges      — пары бортов, связанных по радио в этот момент;
+  groups     — число подгрупп связи; variants — число различающихся картин;
+  truth      — объекты эталона [x, y, вошёл ли в картину выбранного борта];
+  pic, view  — картина выбранного борта: [x, y, состояние], номер борта.
 """
 
 from __future__ import annotations
@@ -32,81 +43,91 @@ def scenario_from(raw: dict[str, Any]) -> Scenario:
     return _build(Scenario, raw)
 
 
-class WebSimulation(Simulation):
-    """Прогон с кадрами для карты и ходом выполнения.
+def frame(sim: Simulation, t: float, alive: list[int], view: int) -> dict[str, Any]:
+    """Снимок состояния модели для анимации. Только читает состояние."""
+    comps = sim.components(alive, t)
+    group_of = {i: g for g, c in enumerate(comps) for i in c}
+    alive_set = set(alive)
+    variants: dict[frozenset, int] = {}
+    uavs = []
+    for u in sorted(sim.world.uavs.values(), key=lambda u: u.idx):
+        row = [u.idx, round(u.x, 2), round(u.y, 2), group_of.get(u.idx, -1), int(u.idx in alive_set), 0, 0, -1]
+        if u.idx in alive_set:
+            node = sim.nodes[u.idx]
+            pic = node.picture
+            oids = frozenset(o.oid for o in pic.objects) if pic else frozenset()
+            row[5] = len(oids)
+            row[6] = sum(node.store.version_vector().values())
+            row[7] = variants.setdefault(oids, len(variants))
+        uavs.append(row)
+    edges = [[i, j] for i in alive for j in sim.net.neighbours(i, t) if i < j and j in alive_set]
+    live = [u for u in uavs if u[4]]
+    cx = sum(u[1] for u in live) / len(live)
+    cy = sum(u[2] for u in live) / len(live)
 
-    Кадры снимаются в моменты выборки модели (`_sample`), не чаще `frame_s`.
-    """
+    v = view if view in alive_set else alive[0]
+    truth_of: dict[tuple[str, str], str | None] = {}
+    for n in sim.nodes.values():
+        for key, tid in n.truth_of.items():
+            truth_of[(n.uid, key)] = tid
+    pic = sim.nodes[v].picture
+    objs: list[list[Any]] = []
+    covered: set[str] = set()
+    if pic is not None:
+        seen: Counter[str] = Counter()
+        for o in sorted(pic.objects, key=lambda o: o.oid):
+            real = [x for x in (truth_of.get(m) for m in o.members) if x is not None]
+            if not real:
+                status = "false"
+            else:
+                top = Counter(real).most_common(1)[0][0]
+                covered.add(top)
+                seen[top] += 1
+                status = "dup" if seen[top] > 1 else ("mixed" if len(set(real)) > 1 else "ok")
+            if o.conflict:
+                status += "+conflict"
+            objs.append([round(o.x, 1), round(o.y, 1), status])
+    truth = [[round(o.x, 1), round(o.y, 1), int(o.oid in covered)] for o in sim.world.objects]
+    return {"t": round(t, 2), "c": [round(cx, 2), round(cy, 2)], "uavs": uavs, "edges": edges,
+            "groups": len(comps), "variants": len(variants), "truth": truth, "pic": objs, "view": v}
+
+
+class FrameRecorder:
+    """Обработчик ``on_sample``: ход выполнения и кадры."""
 
     def __init__(self, sc: Scenario, post: Post | None, frame_s: float, view_uav: int) -> None:
-        super().__init__(sc)
-        self._post = post
-        self._frame_s = frame_s
-        self._next_frame = 0.0
-        self._view = view_uav
-        self._total = sc.run.duration_s + getattr(sc.run, "settle_s", 0.0)
-        self._last_progress = -1
+        self.post = post
+        self.frame_s = frame_s
+        self.view = view_uav
+        self.total = sc.run.duration_s + getattr(sc.run, "settle_s", 0.0)
+        self.next_frame = 0.0
+        self.last_pct = -1
         self.frames: list[dict[str, Any]] = []
 
-    def _sample(self, t: float, alive: list[int]) -> None:  # noqa: D401 — расширение выборки
-        super()._sample(t, alive)
-        pct = int(100 * t / self._total) if self._total else 100
-        if self._post and pct != self._last_progress:
-            self._last_progress = pct
-            self._post(json.dumps({"type": "progress", "t": round(t, 1), "pct": pct}))
-        if t + 1e-9 >= self._next_frame:
-            self._next_frame += self._frame_s
+    def __call__(self, sim: Simulation, t: float, alive: list[int]) -> None:
+        pct = int(100 * t / self.total) if self.total else 100
+        if self.post and pct != self.last_pct:
+            self.last_pct = pct
+            self.post(json.dumps({"type": "progress", "t": round(t, 1), "pct": pct}))
+        if t + 1e-9 >= self.next_frame:
+            self.next_frame += self.frame_s
             try:
-                self.frames.append(self._frame(t, alive))
+                self.frames.append(frame(sim, t, alive, self.view))
             except Exception as e:  # кадр — только для показа, на прогон не влияет
-                if self._post:
-                    self._post(json.dumps({"type": "warn", "text": f"кадр {t:.1f} с: {e}"}))
-
-    def _frame(self, t: float, alive: list[int]) -> dict[str, Any]:
-        w = self.world
-        comps = self._components(alive, t)
-        group_of = {i: g for g, c in enumerate(comps) for i in c}
-        uavs = [[u.idx, round(u.x, 1), round(u.y, 1), group_of.get(u.idx, -1)]
-                for u in w.uavs.values() if u.alive]
-        cx = sum(u[1] for u in uavs) / len(uavs)
-        cy = sum(u[2] for u in uavs) / len(uavs)
-        truth = [[round(o.x, 1), round(o.y, 1)] for o in w.objects]
-        view = self._view if self._view in alive else alive[0]
-        pic = self.nodes[view].picture
-        objs: list[list[Any]] = []
-        if pic is not None:
-            truth_of: dict[tuple[str, str], str | None] = {}
-            for n in self.nodes.values():
-                for key, tid in n.truth_of.items():
-                    truth_of[(n.uid, key)] = tid
-            seen: Counter[str] = Counter()
-            for o in sorted(pic.objects, key=lambda o: o.oid):
-                real = [x for x in (truth_of.get(m) for m in o.members) if x is not None]
-                if not real:
-                    status = "false"
-                else:
-                    top = Counter(real).most_common(1)[0][0]
-                    seen[top] += 1
-                    status = "dup" if seen[top] > 1 else ("mixed" if len(set(real)) > 1 else "ok")
-                if o.conflict:
-                    status += "+conflict"
-                objs.append([round(o.x, 1), round(o.y, 1), status])
-        digests = [self.nodes[i].picture.digest if self.nodes[i].picture else "" for i in alive]
-        return {"t": round(t, 1), "c": [round(cx, 1), round(cy, 1)], "uavs": uavs,
-                "truth": truth, "pic": objs, "view": view, "groups": len(comps),
-                "agreed": len(set(digests)) == 1}
+                if self.post:
+                    self.post(json.dumps({"type": "warn", "text": f"кадр {t:.1f} с: {e}"}))
 
 
-def run_json(raw_json: str, post: Post | None = None, frame_s: float = 1.0,
+def run_json(raw_json: str, post: Post | None = None, frame_s: float = 0.5,
              view_uav: int = 0) -> str:
     """Прогон сценария; вход и выход — JSON (удобно для обмена с JavaScript)."""
     raw = json.loads(raw_json)
     sc = scenario_from(raw)
     w0 = time.perf_counter()
-    sim = WebSimulation(sc, post, frame_s, view_uav)
-    res = sim.run(progress=False)
+    rec = FrameRecorder(sc, post, frame_s, view_uav)
+    res = Simulation(sc, on_sample=rec).run(progress=False)
     summary = res.summary
     summary["wall_s"] = round(time.perf_counter() - w0, 1)
     summary["version"] = __version__
-    return json.dumps({"summary": summary, "series": res.series, "frames": sim.frames,
+    return json.dumps({"summary": summary, "series": res.series, "frames": rec.frames,
                        "scenario": to_dict(sc)}, ensure_ascii=False)

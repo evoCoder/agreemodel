@@ -1,19 +1,24 @@
-// Интерфейс симулятора «Согласие»: исходные данные → расчёт в фоновом потоке → показатели, карта, графики.
+// Интерфейс симулятора «Согласие»: исходные данные → расчёт в фоновом потоке →
+// результат (карточки), анимация «Что происходит», карта маршрута, показатели, детали для специалистов.
 import { PRESETS } from "./presets.js";
+import { applyTerms } from "./terms.js";
 
 const $ = (id) => document.getElementById(id);
 const form = $("form");
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const fmt = (x, d = 1) => (x === null || x === undefined ? "—" : Number(x).toFixed(d).replace(".", ","));
+const int = (x) => Math.round(x).toLocaleString("ru-RU");
 const uid = (i) => "U" + String(i + 1).padStart(2, "0");
 
 let worker = null;
 let base = null;      // базовый сценарий (scenarios/base.toml)
 let sc = null;        // текущие исходные данные
 let preset = null;
-let result = null;
+let result = null;    // результат прогона + производные для анимации
 let frameIdx = 0;
-let playTimer = null;
+let playing = false;
+let playT = 0;        // текущее модельное время воспроизведения
+let lastTs = 0;
 let runStart = 0;
 let build = {};
 
@@ -22,6 +27,9 @@ const SPLITS = {
   "3+5": [[0, 1, 2], [3, 4, 5, 6, 7]],
   "2+2+4": [[0, 1], [2, 3], [4, 5, 6, 7]],
 };
+const GROUP = ["#2563eb", "#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d", "#0891b2", "#a16207"];
+const VARIANT = ["#2563eb", "#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d"];
+const GREEN = "#16a34a", RED = "#dc2626", GRAY = "#94a3b8", INK = "#0f172a", MUTED = "#475569";
 
 // ------------------------------------------------------------------ среда расчёта
 function startWorker() {
@@ -34,19 +42,17 @@ function onWorker(e) {
   let m = e.data;
   if (typeof m === "string") m = JSON.parse(m);
   if (m.type === "ready") {
-    if (!base) {
-      base = JSON.parse(m.base);
-      choosePreset(PRESETS[0]);
-    }
+    if (!base) { base = JSON.parse(m.base); choosePreset(PRESETS[0]); }
     build.pyver = m.pyver;
     $("ver").textContent = verLine() + ` · среда загружена за ${fmt(m.load_s)} с`;
     setBusy(false);
   } else if (m.type === "progress") {
     $("bar").style.width = m.pct + "%";
-    $("ptext").textContent = `модельное время ${Math.round(m.t)} с · ${m.pct} % · прошло ${fmt((performance.now() - runStart) / 1000, 0)} с`;
+    $("ptext").textContent = `расчёт: модельное время ${Math.round(m.t)} с · ${m.pct} % · прошло ${fmt((performance.now() - runStart) / 1000, 0)} с`;
   } else if (m.type === "result") {
     result = JSON.parse(m.data);
     result.browser_s = m.browser_s;
+    prepare();
     showResult();
     setBusy(false);
   } else if (m.type === "warn") {
@@ -72,15 +78,36 @@ function verLine() {
     ` · сборка ${b.built || "?"} · Pyodide ${b.pyodide || "?"}` + (b.pyver ? ` (Python ${b.pyver})` : "");
 }
 
+// ------------------------------------------------------------------ подсказки
+function initTips() {
+  const tip = $("tip");
+  const show = (el) => {
+    tip.textContent = el.dataset.tip;
+    tip.style.display = "block";
+    const r = el.getBoundingClientRect(), w = Math.min(340, window.innerWidth - 20);
+    tip.style.maxWidth = w + "px";
+    let x = Math.min(Math.max(10, r.left), window.innerWidth - w - 10);
+    let y = r.bottom + 6;
+    tip.style.left = x + "px"; tip.style.top = (y + window.scrollY) + "px";
+    const th = tip.getBoundingClientRect().height;
+    if (y + th > window.innerHeight - 10) tip.style.top = (r.top - th - 6 + window.scrollY) + "px";
+  };
+  const hide = () => { tip.style.display = "none"; };
+  document.addEventListener("mouseover", (e) => { const el = e.target.closest("[data-tip]"); if (el) show(el); else hide(); });
+  document.addEventListener("focusin", (e) => { const el = e.target.closest("[data-tip]"); if (el) show(el); });
+  document.addEventListener("focusout", hide);
+  window.addEventListener("scroll", hide, { passive: true });
+}
+
 // ------------------------------------------------------------------ сценарии
 function renderPresets() {
   const box = $("presets");
   box.innerHTML = "";
   for (const p of PRESETS) {
     const div = document.createElement("div");
-    div.className = "preset" + (preset && preset.id === p.id ? " on" : "");
+    div.className = "preset" + (preset && preset.id === p.id ? " on" : "") + (p.disabled ? " off" : "");
     div.innerHTML = `<button data-id="${p.id}" data-off="${p.disabled ? 1 : 0}" ${p.disabled ? "disabled" : ""}>${p.title}</button>` +
-      `<p><b>Что задано:</b> ${p.what}</p><p><b>Ожидается:</b> ${p.expect}</p>`;
+      `<div class="pbody"><p><b>Что задано.</b> ${p.what}</p><p><b>Что попробовать.</b> ${p.try}</p><p><b>Что должно получиться.</b> ${p.expect}</p></div>`;
     div.querySelector("button").onclick = () => choosePreset(p);
     box.appendChild(div);
   }
@@ -104,13 +131,13 @@ function splitOf(s) {
   return "custom";
 }
 
-function ev(kind) { return sc.event.find((e) => e.kind === kind); }
+const ev = (kind) => sc.event.find((e) => e.kind === kind);
 
 function fillForm(skip) {
   const f = form.elements;
   const set = (name, v) => { if (f[name] && f[name] !== skip) { if (f[name].type === "checkbox") f[name].checked = v; else f[name].value = v; } };
   const n = sc.swarm.n_uav;
-  for (const [name, count] of [["fail_uav", n], ["view", n + 2]]) {
+  for (const [name, count] of [["fail_uav", n], ["view", n + 1]]) {
     const sel = f[name];
     if (sel.options.length !== count) {
       const cur = sel.value;
@@ -123,11 +150,11 @@ function fillForm(skip) {
   const p0 = sc.net.partition[0];
   set("gap_start", p0 ? p0.start_s : "");
   set("gap_end", p0 ? p0.end_s : "");
-  f.gap_start.disabled = f.gap_end.disabled = !p0;
+  f.gap_start.disabled = f.gap_end.disabled = !p0 || f.split.disabled;
   const gaps = sc.net.partition.map((p) => p.end_s - p.start_s);
   $("gap_hint").textContent = gaps.length
-    ? "Разрыв" + (gaps.length > 1 ? "ы" : "") + ": " + gaps.map((g) => `${fmt(g / 60, 1)} мин`).join(", ") + (split === "custom" ? " (поля относятся к первому)" : "")
-    : "";
+    ? "Длительность разрыва: " + gaps.map((g) => `${fmt(g / 60, 1)} мин`).join(", ") + (split === "custom" ? " (поля относятся к первому)" : "")
+    : "Все борты всё время на связи.";
   set("loss", Math.round(sc.net.loss * 100));
   set("latency", sc.net.latency_ms);
   set("bandwidth", sc.net.bandwidth_kbps);
@@ -211,10 +238,10 @@ function buildAllParams() {
 function validate() {
   const d = sc.run.duration_s;
   for (const p of sc.net.partition) {
-    if (!(p.start_s >= 0 && p.end_s > p.start_s)) throw new Error("разрыв: конец должен быть позже начала");
-    if (p.end_s > d) throw new Error("разрыв заканчивается после конца прогона — увеличьте длительность");
+    if (!(p.start_s >= 0 && p.end_s > p.start_s)) throw new Error("разрыв связи: конец должен быть позже начала");
+    if (p.end_s > d) throw new Error("разрыв связи заканчивается после конца полёта — увеличьте длительность");
   }
-  for (const e of sc.event) if (e.t_s > d) throw new Error(`событие «${e.kind}» на ${e.t_s} с — позже конца прогона`);
+  for (const e of sc.event) if (e.t_s > d) throw new Error(`${e.kind === "fail" ? "отказ" : "присоединение"} на ${e.t_s} с — позже конца полёта`);
 }
 
 // ------------------------------------------------------------------ запуск
@@ -222,11 +249,12 @@ function run() {
   try { validate(); } catch (err) { $("ptext").textContent = err.message; return; }
   result = null;
   stopPlay();
+  renderCards(null);
   $("bar").style.width = "0%";
   $("ptext").textContent = "расчёт…";
   runStart = performance.now();
   setBusy(true);
-  const frame_s = sc.run.duration_s > 600 ? 2 : 1;
+  const frame_s = sc.run.duration_s > 600 ? 1 : 0.5;
   worker.postMessage({ type: "run", scenario: sc, frame_s, view_uav: Number(form.elements.view.value) });
 }
 
@@ -237,134 +265,429 @@ function stop() {
   startWorker();
 }
 
-// ------------------------------------------------------------------ показатели
-const ok = (b) => (b ? '<span class="pass">✓</span>' : '<span class="fail">✗</span>');
+// ------------------------------------------------------------------ подготовка анимации
+function prepare() {
+  const fr = result.frames, sce = result.scenario, s = result.summary;
+  result.frame_s = fr.length > 2 ? fr[fr.length - 1].t - fr[fr.length - 2].t : 1;
+  result.tmax = fr[fr.length - 1].t;
+  // картины «расходятся», если различия держатся не менее 1 с: кратковременные различия
+  // в момент появления нового объекта (обновление картины — каждые 0,25 с) не показываются
+  const div = fr.map((f) => f.variants > 1);
+  result.diverged = div.map((d, i) => {
+    if (!d) return false;
+    let a = i, b = i;
+    while (a > 0 && div[a - 1]) a--;
+    while (b < div.length - 1 && div[b + 1]) b++;
+    return fr[b].t - fr[a].t + result.frame_s >= 1 - 1e-9;
+  });
+  result.maxRec = Math.max(1, ...fr.flatMap((f) => f.uavs.map((u) => u[6])));
+  // строй — в собственной системе группы: курс вверх; отказавший борт — на месте в строю,
+  // где он был в момент отказа
+  const lastRel = {};
+  let ext = 1;
+  fr.forEach((f, i) => {
+    const a = fr[Math.max(0, i - 4)].c, b = fr[Math.min(fr.length - 1, i + 4)].c;
+    const h = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 > 1 ? Math.atan2(b[1] - a[1], b[0] - a[0]) : (i ? fr[i - 1].heading : Math.PI / 2);
+    f.heading = h;
+    const rot = Math.PI / 2 - h, cs = Math.cos(rot), sn = Math.sin(rot);
+    f.rel = {};
+    for (const u of f.uavs) {
+      let r;
+      if (u[4]) {
+        const dx = u[1] - f.c[0], dy = u[2] - f.c[1];
+        r = [dx * cs - dy * sn, dx * sn + dy * cs];
+        lastRel[u[0]] = r;
+        ext = Math.max(ext, Math.abs(r[0]), Math.abs(r[1]));
+      } else r = lastRel[u[0]] || [0, 0];
+      f.rel[u[0]] = r;
+    }
+  });
+  result.formExt = ext;
+  // события для полосы времени
+  const evs = [];
+  for (const e of sce.event)
+    if (e.kind === "fail") evs.push({ t: e.t_s, kind: "fail", text: `отказ борта ${uid(e.uav)}` });
+  for (const r of s.restores) {
+    const okr = r.store_conv_s !== null && r.store_conv_s <= 1.5;
+    if (r.kind === "partition_end")
+      evs.push({ t: r.t_s, kind: "restore", ok: okr, conv: r.store_conv_s,
+        text: `связь восстановлена → согласованность восстановлена ${r.store_conv_s === null ? "— не достигнута" : "за " + fmt(r.store_conv_s) + " с"}` });
+    else if (r.kind.startsWith("join"))
+      evs.push({ t: r.t_s, kind: "join", ok: okr, conv: r.store_conv_s,
+        text: `присоединение борта ${r.kind.split(" ")[1] || ""} → получил картину ${r.store_conv_s === null ? "— не получил" : "за " + fmt(r.store_conv_s) + " с"}` });
+  }
+  evs.sort((a, b) => a.t - b.t);
+  result.events = evs;
+  result.joinT = Object.fromEntries(sce.event.filter((e) => e.kind === "join").map((e) => [e.uav, e.t_s]));
+  result.failT = Object.fromEntries(sce.event.filter((e) => e.kind === "fail").map((e) => [e.uav, e.t_s]));
+  result.view = mapView();
+}
+
+// ------------------------------------------------------------------ результат
+const okMark = (b) => (b === null ? "" : b ? '<span class="pass">✓</span>' : '<span class="fail">✗</span>');
+
+function cardsData(s, sce) {
+  const parts = s.restores.filter((r) => r.kind === "partition_end");
+  const joins = s.restores.filter((r) => r.kind.startsWith("join"));
+  const worst = (rs) => rs.reduce((m, r) => (r.store_conv_s === null || m === null ? null : Math.max(m, r.store_conv_s)), 0);
+  const miss = Object.values(s.records_missing_per_uav).reduce((a, b) => a + b, 0);
+  const cards = [];
+  if (parts.length) {
+    const w = worst(parts);
+    cards.push({ term: "восстановление согласованности", title: "Восстановление согласованности после разрыва связи",
+      value: w === null ? "не достигнуто" : `${fmt(w)} с`, req: "≤ 1,5 с", ok: w !== null && w <= 1.5,
+      note: w === null ? "Картины бортов не сошлись." : `Через столько после возобновления связи картины всех бортов снова совпали${parts.length > 1 ? ` (наибольшее из ${parts.length} разрывов)` : ""}.` });
+  } else cards.push({ term: "восстановление согласованности", title: "Восстановление согласованности после разрыва связи", value: "—", req: "≤ 1,5 с", ok: null, note: "В этом сценарии разрыва связи нет." });
+  if (joins.length) {
+    const w = worst(joins);
+    cards.push({ term: "присоединение борта", title: "Получение картины присоединившимся бортом",
+      value: w === null ? "не получил" : `${fmt(w)} с`, req: "≤ 1,5 с", ok: w !== null && w <= 1.5,
+      note: "За столько новый борт получил всю картину, накопленную группой." });
+  } else cards.push({ term: "присоединение борта", title: "Получение картины присоединившимся бортом", value: "—", req: "≤ 1,5 с", ok: null, note: "В этом сценарии присоединения нет." });
+  cards.push({ term: "потери записей", title: "Потери записей при синхронизации", value: int(miss), req: "0", ok: miss === 0,
+    note: miss === 0 ? `Все ${int(s.records_union)} записей дошли до всех работающих бортов.` : `Не дошли до части бортов из ${int(s.records_union)}.` });
+  const d = s.picture.duplicates;
+  cards.push({ term: "логический дубликат", title: "Логические дубликаты", value: int(d), req: "минимизируются", ok: d === 0 ? true : null,
+    note: d === 0 ? `Каждый из ${s.picture.objects} объектов картины записан один раз.` : `Из ${s.picture.objects} объектов картины (${fmt(100 * d / Math.max(1, s.picture.objects), 0)} %).` });
+  return cards;
+}
+
+function renderCards(s) {
+  const box = $("cards");
+  const data = s ? cardsData(s, result.scenario) : cardsData0();
+  box.innerHTML = data.map((c) => `<div class="card ${c.ok === true ? "good" : c.ok === false ? "bad" : "neutral"}">
+    <div class="ct"><span data-term="${c.term}">${c.title}</span></div>
+    <div class="cv">${c.value} ${okMark(c.ok)}</div>
+    <div class="cr">требование ФТ № 1: ${c.req}</div>
+    <div class="cn">${c.note}</div></div>`).join("");
+  applyTerms(box);
+}
+
+function cardsData0() {
+  const t = (term, title, req) => ({ term, title, value: "—", req, ok: null, note: "Запустите сценарий." });
+  return [t("восстановление согласованности", "Восстановление согласованности после разрыва связи", "≤ 1,5 с"),
+    t("присоединение борта", "Получение картины присоединившимся бортом", "≤ 1,5 с"),
+    t("потери записей", "Потери записей при синхронизации", "0"),
+    t("логический дубликат", "Логические дубликаты", "минимизируются")];
+}
 
 function restoreName(r) {
-  if (r.kind === "partition_end") return `Восстановление согласованности после разрыва связи (${r.t_s} с)`;
-  if (r.kind.startsWith("join")) return `Получение картины присоединившимся бортом ${r.kind.split(" ")[1] || ""} (${r.t_s} с)`;
+  if (r.kind === "partition_end") return `<span data-term="восстановление согласованности">Восстановление согласованности</span> после разрыва связи (связь возобновилась на ${r.t_s} с)`;
+  if (r.kind.startsWith("join")) return `Получение картины <span data-term="присоединение борта">присоединившимся бортом</span> ${r.kind.split(" ")[1] || ""} (${r.t_s} с)`;
   return `Восстановление согласованности: ${r.kind} (${r.t_s} с)`;
 }
 
 function showResult() {
   const s = result.summary, sce = result.scenario;
-  const rows = [];
-  rows.push(["Показатель", "Требование ФТ № 1", "Получено", ""]);
-  rows.push(["Квант обработки и выдачи обновлённого состояния, наибольший", "≤ 0,5 с", `${fmt(s.quantum_s.max)} с (95 % — ${fmt(s.quantum_s.p95)} с)`, ok(s.quantum_s.max <= 0.5)]);
+  renderCards(s);
+  const rows = [["Показатель", "Требование ФТ № 1", "Получено", "", "Что это значит"]];
+  rows.push(['<span data-term="квант обработки">Квант обработки</span> и выдачи обновлённого состояния', "≤ 0,5 с",
+    `${fmt(s.quantum_s.max)} с`, okMark(s.quantum_s.max <= 0.5), "Как часто каждый борт обновляет свою картину (наибольший интервал за полёт)."]);
   const gaps = sce.net.partition.map((p) => p.end_s - p.start_s);
-  rows.push(["Разрыв связи в прогоне, наибольший", "до 15 мин", gaps.length ? `${fmt(Math.max(...gaps) / 60)} мин` : "без разрыва", ""]);
-  for (const r of s.restores)
-    rows.push([restoreName(r), "≤ 1,5 с", r.store_conv_s === null ? "не достигнуто" : `${fmt(r.store_conv_s)} с`, ok(r.store_conv_s !== null && r.store_conv_s <= 1.5)]);
-  rows.push(["Картины всех бортов в конце совпадают", "одинаковое состояние", s.final_pictures_identical ? `да, через ${fmt(s.settle_conv_s)} с` : "нет", ok(s.final_pictures_identical)]);
+  rows.push(['Длительность <span data-term="разрыв связи">разрыва связи</span>', "до 15 мин",
+    gaps.length ? `${fmt(Math.max(...gaps) / 60)} мин` : "разрыва нет", "", "Сколько подгруппы работали без связи друг с другом."]);
+  for (const r of s.restores) {
+    const ok = r.store_conv_s !== null && r.store_conv_s <= 1.5;
+    rows.push([restoreName(r), "≤ 1,5 с", r.store_conv_s === null ? "не достигнуто" : `${fmt(r.store_conv_s)} с`, okMark(ok),
+      r.kind === "partition_end" ? "От возобновления связи до момента, когда у всех бортов одни и те же сведения." : "От появления нового борта до момента, когда у него вся картина группы."]);
+  }
+  rows.push(['<span data-term="картина борта">Картины</span> всех бортов в конце совпадают', "одинаковое состояние",
+    s.final_pictures_identical ? `да, через ${fmt(s.settle_conv_s)} с` : "нет", okMark(s.final_pictures_identical),
+    "После остановки записи и продолжения обмена картины всех работающих бортов одинаковы."]);
   const miss = Object.values(s.records_missing_per_uav).reduce((a, b) => a + b, 0);
-  rows.push(["Потери записей при синхронизации", "0", `${miss} из ${s.records_union}`, ok(miss === 0)]);
+  rows.push(['<span data-term="потери записей">Потери записей</span>', "0", `${miss} из ${int(s.records_union)}`, okMark(miss === 0),
+    "Сведения, которые есть хотя бы у одного борта, но не дошли до другого."]);
   const p = s.picture;
-  rows.push(["Логические дубликаты объектов", "минимизируются", `${p.duplicates} (${fmt(100 * p.duplicates / Math.max(1, p.objects), 0)} % объектов картины)`, ""]);
-  rows.push(["Объекты картины / обнаруженные объекты эталона", "—", `${p.objects} / ${p.truth_detected}; ложных ${p.false_objects}, смешанных ${p.mixed_objects}`, ""]);
-  rows.push(["Служебный трафик", "—", `${fmt(s.net.mbytes_sent, 2)} МБ, ${s.net.msgs_sent} сообщ., потеряно ${s.net.msgs_lost}`, ""]);
-  rows.push(["Время расчёта в браузере", "—", `${fmt(result.browser_s)} с на ${sce.run.duration_s} с модельного времени`, ""]);
+  rows.push(['<span data-term="логический дубликат">Логические дубликаты</span>', "минимизируются", `${p.duplicates}`, okMark(p.duplicates === 0 ? true : null),
+    "Один реальный объект записан в картине дважды."]);
+  rows.push(['Объекты картины / обнаруженные <span data-term="объект эталона">объекты эталона</span>', "—",
+    `${p.objects} / ${p.truth_detected}; ложных ${p.false_objects}, смешанных ${p.mixed_objects}`, "",
+    "Сколько объектов в картине и сколько реальных объектов борта увидели; ложный — реального объекта нет; смешанный — два реальных записаны как один."]);
   $("metrics").innerHTML = rows.map((r, i) => `<tr>${r.map((c) => (i ? `<td>${c}</td>` : `<th>${c}</th>`)).join("")}</tr>`).join("");
-  $("ptext").textContent = `готово за ${fmt(result.browser_s)} с · сценарий ${preset.title.split(".")[0]}${document.querySelector(".preset.changed") ? " (изменён)" : ""} · seed ${sce.run.seed}`;
+  applyTerms($("metrics"));
+
+  const n = s.net || {};
+  const tech = [
+    ["Передача на борт (средняя)", n.kbps_per_uav !== undefined ? `${fmt(n.kbps_per_uav)} кбит/с из ${sce.net.bandwidth_kbps}` : "—"],
+    ["Занятость радиоэфира", n.air_busy_pct !== undefined ? `${fmt(n.air_busy_pct)} %` : "—"],
+    ["Служебный трафик", `${fmt(n.mbytes_sent, 2)} МБ; сообщений ${int(n.msgs_sent)}, потеряно ${int(n.msgs_lost)}`],
+    ["Квант, 95 %", `${fmt(s.quantum_s.p95)} с`],
+    ["Пересчёт картины, 95 % / наибольший", s.picture_compute_ms ? `${fmt(s.picture_compute_ms.p95, 2)} / ${fmt(s.picture_compute_ms.max, 2)} мс (замер в браузере)` : "—"],
+    ["Задержка фиксации нового наблюдения", s.fix_latency_s ? `медиана ${fmt(s.fix_latency_s.median)} с, наибольшая ${fmt(s.fix_latency_s.max)} с` : "—"],
+    ["От обнаружения до фиксации", s.detect_to_fix_s ? `медиана ${fmt(s.detect_to_fix_s.median)} с, наибольшее ${fmt(s.detect_to_fix_s.max)} с` : "—"],
+    ["Хранилище борта, наибольшее", s.store_kbytes_max !== undefined ? `${fmt(s.store_kbytes_max)} КБ` : "—"],
+    ["Время расчёта в браузере", `${fmt(result.browser_s)} с на ${sce.run.duration_s} с модельного времени`],
+  ];
+  $("tech").innerHTML = tech.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("");
+
+  $("ptext").textContent = `готово за ${fmt(result.browser_s)} с · ${preset.title.split(".")[0]}${document.querySelector(".preset.changed") ? " (исходные данные изменены)" : ""} · seed ${sce.run.seed}`;
   $("bar").style.width = "100%";
   for (const id of ["dl_summary", "dl_series", "dl_scenario", "play"]) $(id).disabled = false;
   const t = $("time");
-  t.max = result.frames.length - 1; t.disabled = false; t.value = t.max;
-  view = mapView();
-  showFrame(result.frames.length - 1);
+  t.max = result.frames.length - 1; t.disabled = false;
   drawChart();
+  playT = 0;
+  showFrame(0);
+  startPlay();  // воспроизведение запускается само
 }
 
-// ------------------------------------------------------------------ карта
-const GROUP_COLORS = ["#2563eb", "#d97706", "#7c3aed", "#059669", "#db2777", "#0891b2"];
+// ------------------------------------------------------------------ «Что происходит»
+function wrapText(g, text, x, y, maxW, lh) {
+  const words = text.split(" ");
+  let line = "", yy = y;
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (g.measureText(test).width > maxW && line) { g.fillText(line, x, yy); line = w; yy += lh; }
+    else line = test;
+  }
+  if (line) g.fillText(line, x, yy);
+  return yy;
+}
 
-let view = null;   // границы карты на весь прогон — вид не «прыгает» при просмотре
+function drawStory(i, alpha = 0) {
+  const fr = result.frames[i], sce = result.scenario;
+  const nx = result.frames[Math.min(i + 1, result.frames.length - 1)];
+  const tNow = fr.t + alpha * (nx.t - fr.t);
+  const cv = $("story"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
 
+  // 1. полоса времени
+  const L = 24, R = W - 24, by = 44, bh = 20, tmax = result.tmax;
+  const X = (t) => L + (t / tmax) * (R - L);
+  g.fillStyle = "#dcfce7"; g.fillRect(L, by, R - L, bh);
+  g.fillStyle = "#166534"; g.font = "12px system-ui, sans-serif";
+  for (const p of sce.net.partition) {
+    g.fillStyle = "#fecaca"; g.fillRect(X(p.start_s), by, X(p.end_s) - X(p.start_s), bh);
+  }
+  // подписи сегментов
+  let segs = [], t0 = 0;
+  for (const p of [...sce.net.partition].sort((a, b) => a.start_s - b.start_s)) { segs.push([t0, p.start_s, null]); segs.push([p.start_s, p.end_s, p]); t0 = p.end_s; }
+  segs.push([t0, tmax, null]);
+  for (const [a, b, p] of segs) {
+    const w = X(b) - X(a);
+    const txt = p ? `разрыв связи: ${p.groups.length} подгруппы` : "связь есть";
+    g.font = (p ? "bold " : "") + "12px system-ui, sans-serif";
+    if (w > g.measureText(txt).width + 8) { g.fillStyle = p ? "#991b1b" : "#166534"; g.fillText(txt, X(a) + 6, by + 14); }
+  }
+  // события
+  g.font = "12px system-ui, sans-serif";
+  let lastRight = -1e9, row = 0;
+  for (const e of result.events) {
+    const x = X(e.t);
+    const col = e.kind === "fail" ? "#475569" : e.ok ? GREEN : RED;
+    g.fillStyle = col; g.strokeStyle = col;
+    g.beginPath(); g.moveTo(x, by - 2); g.lineTo(x - 5, by - 10); g.lineTo(x + 5, by - 10); g.fill();
+    g.beginPath(); g.moveTo(x, by); g.lineTo(x, by + bh); g.stroke();
+    const tw = g.measureText(e.text).width;
+    row = x - 4 < lastRight ? (row + 1) % 2 : 0;
+    let tx = Math.min(Math.max(L, x - 6), R - tw);
+    const ty = row ? by + bh + 30 : by + bh + 15;
+    g.fillText(e.text, tx, ty);
+    lastRight = Math.max(lastRight, tx + tw + 10);
+  }
+  g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
+  g.fillText("0 с", L, by - 14); g.fillText(`${Math.round(tmax)} с`, R - 30, by - 14);
+  // бегунок
+  const px = X(tNow);
+  g.strokeStyle = INK; g.lineWidth = 2; g.beginPath(); g.moveTo(px, by - 16); g.lineTo(px, by + bh + 4); g.stroke(); g.lineWidth = 1;
+  g.fillStyle = INK; g.font = "bold 13px system-ui, sans-serif";
+  const lbl = `${fmt(tNow, 0)} с`; g.fillText(lbl, Math.min(Math.max(px - 14, L), R - 40), by - 20 + 0);
+
+  const top = 112;
+  g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(0, top - 10); g.lineTo(W, top - 10); g.stroke();
+
+  // 2. строй и радиосвязь
+  const fw = 420, cx0 = fw / 2, cy0 = top + 40 + (H - top - 80) / 2;
+  const k = Math.min((fw - 90) / 2, (H - top - 120) / 2) / result.formExt;
+  g.fillStyle = INK; g.font = "bold 14px system-ui, sans-serif";
+  g.fillText("Строй (вид вблизи) и радиосвязь", 16, top + 8);
+  g.font = "12px system-ui, sans-serif"; g.fillStyle = MUTED;
+  g.fillText("линия — борта слышат друг друга по радио", 16, top + 26);
+  const P = (u) => { const r = fr.rel[u[0]]; return [cx0 + r[0] * k, cy0 - r[1] * k]; };
+  const byIdx = Object.fromEntries(fr.uavs.map((u) => [u[0], u]));
+  g.lineWidth = 1.5;
+  for (const [a, b] of fr.edges) {
+    const ua = byIdx[a], ub = byIdx[b];
+    if (!ua || !ub) continue;
+    const [x1, y1] = P(ua), [x2, y2] = P(ub);
+    g.strokeStyle = fr.groups > 1 ? GROUP[ua[3] % GROUP.length] + "88" : "#86efac";
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  }
+  g.lineWidth = 1;
+  for (const u of fr.uavs) {
+    const [x, y] = P(u);
+    if (!u[4]) {
+      g.strokeStyle = GRAY; g.lineWidth = 3;
+      g.beginPath(); g.moveTo(x - 8, y - 8); g.lineTo(x + 8, y + 8); g.moveTo(x + 8, y - 8); g.lineTo(x - 8, y + 8); g.stroke();
+      g.lineWidth = 1; g.fillStyle = GRAY; g.font = "11px system-ui, sans-serif"; g.fillText(uid(u[0]), x + 10, y + 4); g.fillText("отказ", x - 14, y + 20);
+      continue;
+    }
+    const jt = result.joinT[u[0]];
+    if (jt !== undefined && fr.t - jt < 8) {
+      g.strokeStyle = "#f59e0b"; g.lineWidth = 3; g.beginPath(); g.arc(x, y, 15, 0, 2 * Math.PI); g.stroke(); g.lineWidth = 1;
+      g.fillStyle = "#b45309"; g.font = "bold 11px system-ui, sans-serif"; g.fillText("новый", x - 15, y - 19);
+    }
+    g.fillStyle = fr.groups > 1 ? GROUP[u[3] % GROUP.length] : "#2563eb";
+    g.beginPath(); g.moveTo(x, y - 9); g.lineTo(x + 8, y + 7); g.lineTo(x, y + 3); g.lineTo(x - 8, y + 7); g.closePath(); g.fill();
+    g.fillStyle = INK; g.font = "11px system-ui, sans-serif"; g.fillText(uid(u[0]), x + 10, y + 4);
+  }
+  // масштаб
+  const m = sce.swarm.spacing_m;
+  g.strokeStyle = MUTED; g.beginPath(); g.moveTo(16, H - 18); g.lineTo(16 + m * k, H - 18); g.stroke();
+  g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif"; g.fillText(`${m} м`, 16, H - 24);
+  if (fr.groups > 1) {
+    g.fillStyle = RED; g.font = "bold 22px system-ui, sans-serif"; g.fillText("РАЗРЫВ СВЯЗИ", 16, top + 60);
+    g.font = "13px system-ui, sans-serif"; g.fillText(`подгрупп связи: ${fr.groups}, они не слышат друг друга`, 16, top + 80);
+  }
+
+  // 3. картины бортов
+  const x0 = fw + 30, pw = W - x0 - 20;
+  g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(fw + 10, top - 10); g.lineTo(fw + 10, H); g.stroke();
+  g.fillStyle = INK; g.font = "bold 14px system-ui, sans-serif";
+  g.fillText("Картины бортов", x0, top + 8);
+  g.font = "12px system-ui, sans-serif"; g.fillStyle = MUTED;
+  g.fillText("полоса — сколько сведений у борта; одинаковый цвет — одинаковая картина", x0, top + 26);
+  const div = result.diverged[i];
+  const nv = fr.variants;
+  const syncing = result.events.find((e) => e.kind !== "fail" && e.conv !== null && tNow >= e.t && tNow < e.t + e.conv);
+  g.font = "bold 16px system-ui, sans-serif";
+  if (syncing) {
+    g.fillStyle = "#b45309";
+    g.fillText(syncing.kind === "join" ? "Новый борт получает картину группы…" : "Связь восстановлена — идёт согласование картин…", x0, top + 52);
+    g.font = "12px system-ui, sans-serif"; g.fillStyle = "#92400e";
+    g.fillText(`борта обмениваются накопленными сведениями: ${fmt(tNow - syncing.t, 2)} с`, x0, top + 68);
+  } else if (div) {
+    g.fillStyle = RED; g.fillText(`Картины расходятся: ${nv} разные картины`, x0, top + 52);
+    g.font = "12px system-ui, sans-serif"; g.fillStyle = "#7f1d1d";
+    g.fillText("у каждой подгруппы только свои сведения", x0, top + 68);
+  } else {
+    g.fillStyle = GREEN; g.fillText("✓ Картины всех бортов совпадают", x0, top + 52);
+    const rec = result.events.filter((e) => e.kind !== "fail" && e.conv !== null && fr.t >= e.t && fr.t <= e.t + e.conv + 15).pop();
+    if (rec) { g.font = "12px system-ui, sans-serif"; g.fillStyle = "#166534"; g.fillText(rec.kind === "join" ? `новый борт получил картину за ${fmt(rec.conv)} с` : `согласованность восстановлена за ${fmt(rec.conv)} с после возобновления связи`, x0, top + 68); }
+  }
+  const rows = sce.swarm.n_uav + Object.keys(result.joinT).length;
+  const rh = Math.min(30, (H - top - 92) / rows), ry0 = top + 84;
+  const bx = x0 + 70, bw = pw - 70 - 230;
+  for (let r = 0; r < rows; r++) {
+    const u = byIdx[r], y = ry0 + r * rh;
+    g.font = "12px system-ui, sans-serif";
+    g.fillStyle = u && u[4] ? (fr.groups > 1 ? GROUP[u[3] % GROUP.length] : "#2563eb") : GRAY;
+    g.beginPath(); g.arc(x0 + 6, y + rh / 2 - 2, 5, 0, 2 * Math.PI); g.fill();
+    g.fillStyle = INK; g.fillText(uid(r), x0 + 16, y + rh / 2 + 2);
+    g.fillStyle = "#f1f5f9"; g.fillRect(bx, y + 3, bw, rh - 10);
+    if (!u) {
+      const coming = syncing && syncing.kind === "join" && nx.uavs.some((q) => q[0] === r);
+      g.fillStyle = coming ? "#b45309" : GRAY;
+      g.fillText(coming ? "присоединяется — получает картину группы" : "ещё не в группе", bx + bw + 10, y + rh / 2 + 2);
+      continue;
+    }
+    if (!u[4]) { g.fillStyle = GRAY; g.fillText("отказ — не работает", bx + bw + 10, y + rh / 2 + 2); continue; }
+    const rec = u[6];  // значения — ровно из кадра модели, без интерполяции
+    g.fillStyle = syncing ? (u[7] === 0 ? "#f59e0b" : "#fbbf24") : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
+    g.fillRect(bx, y + 3, Math.max(2, bw * rec / result.maxRec), rh - 10);
+    g.fillStyle = INK;
+    g.fillText(`объектов ${u[5]} · сведений ${int(rec)}`, bx + bw + 10, y + rh / 2 + 2);
+  }
+}
+
+// ------------------------------------------------------------------ карта маршрута
 function mapView() {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   const add = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
   for (const fr of result.frames) { add(fr.c[0], fr.c[1]); for (const [x, y] of fr.pic) add(x, y); }
-  const pad = 120;
+  const pad = 150;
   x0 -= pad; x1 += pad; y0 -= pad; y1 += pad;
   const cv = $("map");
-  const k = Math.min((cv.width - 20) / (x1 - x0), (cv.height - 50) / (y1 - y0));
-  const v = { x0, y0, x1, y1, k, ox: (cv.width - (x1 - x0) * k) / 2, oy: (cv.height - 30 - (y1 - y0) * k) / 2 };
-  // врезка строя — в угол, где меньше всего точек карты
-  const iw = 230, ih = 150, W = cv.width, H = cv.height - 30;
-  const corners = [[10, 10], [W - iw - 10, 10], [10, H - ih - 10], [W - iw - 10, H - ih - 10]];
-  const pts = [];
-  for (const fr of result.frames) { pts.push(fr.c); for (const q of fr.pic) pts.push(q); }
-  let best = 0, bestN = Infinity;
-  corners.forEach(([cx, cy], n) => {
-    const cnt = pts.filter(([x, y]) => { const sx = v.ox + (x - x0) * k, sy = v.oy + (y1 - y) * k; return sx > cx - 10 && sx < cx + iw + 10 && sy > cy - 10 && sy < cy + ih + 10; }).length;
-    if (cnt < bestN) { bestN = cnt; best = n; }
-  });
-  v.inset = corners[best];
-  return v;
+  const k = Math.min((cv.width - 20) / (x1 - x0), (cv.height - 40) / (y1 - y0));
+  return { x0, y0, x1, y1, k, ox: (cv.width - (x1 - x0) * k) / 2, oy: (cv.height - 26 - (y1 - y0) * k) / 2 };
 }
 
-function showFrame(i) {
-  frameIdx = i;
+function drawMap(i) {
   const fr = result.frames[i];
-  if (!fr) return;
-  const cv = $("map"), g = cv.getContext("2d"), W = cv.width, H = cv.height, v = view;
+  const cv = $("map"), g = cv.getContext("2d"), W = cv.width, H = cv.height, v = result.view;
   const X = (x) => v.ox + (x - v.x0) * v.k, Y = (y) => v.oy + (v.y1 - y) * v.k;
   g.clearRect(0, 0, W, H);
   g.fillStyle = "#f8fafc"; g.fillRect(0, 0, W, H);
-  // путь роя и зона обзора датчиков
   g.strokeStyle = "#93c5fd"; g.lineWidth = 2; g.beginPath();
   for (let j = 0; j <= i; j++) { const c = result.frames[j].c; if (!j) g.moveTo(X(c[0]), Y(c[1])); else g.lineTo(X(c[0]), Y(c[1])); }
   g.stroke(); g.lineWidth = 1;
-  g.strokeStyle = "#94a3b8"; g.setLineDash([4, 4]);
+  g.strokeStyle = GRAY; g.setLineDash([4, 4]);
   g.beginPath(); g.arc(X(fr.c[0]), Y(fr.c[1]), result.scenario.sensor.fov_radius_m * v.k, 0, 2 * Math.PI); g.stroke();
   g.setLineDash([]);
-  g.strokeStyle = "#64748b"; g.lineWidth = 1.2;
-  for (const [x, y] of fr.truth) {
+  for (const [x, y, cov] of fr.truth) {
     if (x < v.x0 || x > v.x1 || y < v.y0 || y > v.y1) continue;
-    g.beginPath(); g.arc(X(x), Y(y), 6, 0, 2 * Math.PI); g.stroke();
+    g.strokeStyle = cov ? "#334155" : "#cbd5e1"; g.lineWidth = cov ? 1.6 : 1.2;
+    g.beginPath(); g.arc(X(x), Y(y), 7, 0, 2 * Math.PI); g.stroke();
   }
-  const col = { ok: "#16a34a", dup: "#ea580c", false: "#dc2626", mixed: "#9333ea" };
+  g.lineWidth = 1;
+  const col = { ok: GREEN, dup: "#ea580c", false: RED, mixed: "#9333ea" };
   for (const [x, y, st] of fr.pic) {
     const b = st.split("+")[0];
     g.fillStyle = col[b] || "#000";
-    if (b === "false") { g.font = "bold 14px sans-serif"; g.fillText("×", X(x) - 4, Y(y) + 5); }
-    else { g.beginPath(); g.arc(X(x), Y(y), 3.5, 0, 2 * Math.PI); g.fill(); }
-    if (st.includes("conflict")) { g.strokeStyle = "#000"; g.beginPath(); g.arc(X(x), Y(y), 9, 0, 2 * Math.PI); g.stroke(); }
+    if (b === "false") { g.font = "bold 15px sans-serif"; g.fillText("×", X(x) - 4, Y(y) + 5); }
+    else { g.beginPath(); g.arc(X(x), Y(y), 3.8, 0, 2 * Math.PI); g.fill(); }
   }
   g.fillStyle = "#1d4ed8"; g.beginPath(); g.arc(X(fr.c[0]), Y(fr.c[1]), 5, 0, 2 * Math.PI); g.fill();
-  // масштабная линейка
   const sb = [100, 200, 500, 1000, 2000, 5000].find((m) => m * v.k > 60) || 5000;
-  g.strokeStyle = "#0f172a"; g.beginPath(); g.moveTo(W - 20 - sb * v.k, H - 12); g.lineTo(W - 20, H - 12); g.stroke();
-  g.fillStyle = "#0f172a"; g.font = "11px sans-serif"; g.fillText(sb >= 1000 ? `${sb / 1000} км` : `${sb} м`, W - 20 - sb * v.k, H - 17);
-  // строй и подгруппы связи — увеличенная врезка
-  const [ix, iy] = v.inset, iw = 230, ih = 150, ik = 9;
-  g.fillStyle = "rgba(255,255,255,.95)"; g.strokeStyle = "#cbd5e1"; g.fillRect(ix, iy, iw, ih); g.strokeRect(ix, iy, iw, ih);
-  g.fillStyle = "#334155"; g.font = "12px sans-serif";
-  g.fillText(`Строй (×${ik}); подгрупп связи: ${fr.groups}`, ix + 8, iy + 16);
-  for (const [idx, x, y, grp] of fr.uavs) {
-    const px = ix + iw / 2 + (x - fr.c[0]) * ik, py = iy + ih / 2 + 10 - (y - fr.c[1]) * ik;
-    g.fillStyle = GROUP_COLORS[grp % GROUP_COLORS.length] || "#000";
-    g.beginPath(); g.arc(px, py, idx === fr.view ? 7 : 5, 0, 2 * Math.PI); g.fill();
-    g.fillStyle = "#0f172a"; g.font = "10px sans-serif"; g.fillText(uid(idx), px + 7, py + 3);
-  }
-  g.fillStyle = "#0f172a"; g.font = "13px sans-serif";
-  g.fillText(`t = ${fmt(fr.t)} с · картина борта ${uid(fr.view)}: объектов ${fr.pic.length}`, 12, H - 12);
-  $("tlabel").textContent = `${fmt(fr.t, 0)} с`;
-  $("time").value = i;
+  g.strokeStyle = INK; g.beginPath(); g.moveTo(W - 20 - sb * v.k, H - 12); g.lineTo(W - 20, H - 12); g.stroke();
+  g.fillStyle = INK; g.font = "11px system-ui, sans-serif"; g.fillText(sb >= 1000 ? `${sb / 1000} км` : `${sb} м`, W - 20 - sb * v.k, H - 17);
+  g.font = "13px system-ui, sans-serif";
+  g.fillText(`t = ${fmt(fr.t, 0)} с · картина борта ${uid(fr.view)}: объектов ${fr.pic.length}`, 12, H - 10);
 }
 
-function stopPlay() { if (playTimer) { clearInterval(playTimer); playTimer = null; $("play").textContent = "▶"; } }
-
-function togglePlay() {
-  if (playTimer) return stopPlay();
-  if (frameIdx >= result.frames.length - 1) frameIdx = 0;
-  $("play").textContent = "❚❚";
-  playTimer = setInterval(() => {
-    if (frameIdx >= result.frames.length - 1) return stopPlay();
-    showFrame(frameIdx + 1);
-  }, 1000 / 15);
+// ------------------------------------------------------------------ воспроизведение
+function showFrame(i, alpha = 0) {
+  frameIdx = Math.max(0, Math.min(i, result.frames.length - 1));
+  drawStory(frameIdx, alpha);
+  drawMap(frameIdx);
+  $("time").value = frameIdx;
+  $("tlabel").textContent = `${fmt(result.frames[frameIdx].t, 0)} с из ${Math.round(result.tmax)}`;
 }
 
-// ------------------------------------------------------------------ график
+function speedAt(t) {
+  const sel = Number($("speed").value);
+  if (sel) return sel;
+  const auto = Math.max(5, result.tmax / 20);
+  // рядом с восстановлением связи и присоединением — замедление, чтобы было видно схождение картин
+  for (const e of result.events)
+    if (e.kind !== "fail" && t >= e.t - 1 && t <= e.t + (e.conv || 1) + 1) return 0.25;
+  for (const e of result.events)
+    if (e.kind !== "fail" && t >= e.t - 4 && t <= e.t + (e.conv || 1) + 4) return 2;
+  return auto;
+}
+
+// кадр по модельному времени: индекс и доля пути до следующего кадра
+function frameAt(t) {
+  const fr = result.frames;
+  let lo = 0, hi = fr.length - 1;
+  if (t <= fr[0].t) return [0, 0];
+  if (t >= fr[hi].t) return [hi, 0];
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (fr[m].t <= t) lo = m; else hi = m; }
+  return [lo, (t - fr[lo].t) / (fr[hi].t - fr[lo].t)];
+}
+
+function tick(ts) {
+  if (!playing) return;
+  const dt = Math.min(0.1, (ts - lastTs) / 1000);
+  lastTs = ts;
+  playT += dt * speedAt(playT);
+  if (playT >= result.tmax) { playT = result.tmax; showFrame(result.frames.length - 1); return stopPlay(); }
+  showFrame(...frameAt(playT));
+  requestAnimationFrame(tick);
+}
+
+function startPlay() {
+  if (frameIdx >= result.frames.length - 1) playT = 0;
+  playing = true; $("play").textContent = "❚❚";
+  lastTs = performance.now();
+  requestAnimationFrame(tick);
+}
+
+function stopPlay() { playing = false; $("play").textContent = "▶"; }
+const togglePlay = () => (playing ? stopPlay() : startPlay());
+
+// ------------------------------------------------------------------ для специалистов: график
 function drawChart() {
   const cv = $("chart"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
   const ser = result.series, sce = result.scenario;
@@ -372,29 +695,26 @@ function drawChart() {
   const L = 48, R = 48, T = 14, B = 26, pw = W - L - R, ph = (H - T - B - 16) / 2;
   const tmax = ser[ser.length - 1].t_s;
   const X = (t) => L + (t / tmax) * pw;
-  // интервалы разрыва и события
-  for (const p of sce.net.partition) { g.fillStyle = "rgba(234,88,12,.08)"; g.fillRect(X(p.start_s), T, X(p.end_s) - X(p.start_s), H - T - B); }
+  for (const p of sce.net.partition) { g.fillStyle = "rgba(220,38,38,.07)"; g.fillRect(X(p.start_s), T, X(p.end_s) - X(p.start_s), H - T - B); }
   g.font = "11px sans-serif";
   for (const e of sce.event) {
     g.strokeStyle = "#64748b"; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(X(e.t_s), T); g.lineTo(X(e.t_s), H - B); g.stroke(); g.setLineDash([]);
-    g.fillStyle = "#475569"; g.fillText(e.kind === "fail" ? `отказ ${uid(e.uav)}` : `новый ${uid(e.uav)}`, X(e.t_s) + 3, H - B - 4);
+    g.fillStyle = MUTED; g.fillText(e.kind === "fail" ? `отказ ${uid(e.uav)}` : `новый ${uid(e.uav)}`, X(e.t_s) + 3, H - B - 4);
   }
-  // панель 1: число подгрупп связи и моменты восстановления согласованности
   const y1 = (v, m) => T + 16 + (ph - 16) - (v / m) * (ph - 24);
   const m1 = Math.max(...ser.map((r) => r.components), 1);
   g.strokeStyle = "#2563eb"; g.lineWidth = 1.8; g.beginPath();
   ser.forEach((r, i) => { const x = X(r.t_s); if (!i) g.moveTo(x, y1(r.components, m1)); else { g.lineTo(x, y1(ser[i - 1].components, m1)); g.lineTo(x, y1(r.components, m1)); } });
   g.stroke(); g.lineWidth = 1;
-  g.fillStyle = "#1e293b"; g.fillText("подгрупп связи; ◆ — хранилища согласованы после восстановления связи / присоединения", L, T + 8);
+  g.fillStyle = INK; g.fillText("число подгрупп связи; ◆ — восстановление согласованности", L, T + 8);
   for (let v = 1; v <= m1; v++) g.fillText(String(v), L - 14, y1(v, m1) + 4);
   for (const r of result.summary.restores) {
     if (r.store_conv_s === null) continue;
     const x = X(r.t_s + r.store_conv_s), y = y1(1, m1);
-    g.fillStyle = r.store_conv_s <= 1.5 ? "#16a34a" : "#dc2626";
+    g.fillStyle = r.store_conv_s <= 1.5 ? GREEN : RED;
     g.beginPath(); g.moveTo(x, y - 6); g.lineTo(x + 5, y); g.lineTo(x, y + 6); g.lineTo(x - 5, y); g.fill();
     g.fillText(`${fmt(r.store_conv_s)} с`, x + 7, y - 6);
   }
-  // панель 2: передача на борт, кбит/с
   const T2 = T + ph + 16;
   const rate = ser.map((r, i) => {
     if (!i) return 0;
@@ -404,15 +724,14 @@ function drawChart() {
   const bw = sce.net.bandwidth_kbps, peak = Math.max(...rate);
   const m2 = Math.max(peak * 1.25, 1);
   const y2 = (v) => T2 + 16 + (ph - 16) - (v / m2) * (ph - 24);
-  if (bw <= m2) { g.strokeStyle = "#dc2626"; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(L, y2(bw)); g.lineTo(L + pw, y2(bw)); g.stroke(); g.setLineDash([]); }
+  if (bw <= m2) { g.strokeStyle = RED; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(L, y2(bw)); g.lineTo(L + pw, y2(bw)); g.stroke(); g.setLineDash([]); }
   g.strokeStyle = "#0f766e"; g.lineWidth = 1.4; g.beginPath();
   rate.forEach((v, i) => { const x = X(ser[i].t_s); if (!i) g.moveTo(x, y2(v)); else g.lineTo(x, y2(v)); });
   g.stroke(); g.lineWidth = 1;
-  g.fillStyle = "#1e293b";
-  g.fillText(`передача на борт, кбит/с: пик ${fmt(peak, 0)} — ${fmt(100 * peak / bw, 0)} % полосы канала ${bw} кбит/с` + (bw <= m2 ? " (красная линия)" : ""), L, T2 + 8);
+  g.fillStyle = INK;
+  g.fillText(`передача на борт, кбит/с: пик ${fmt(peak, 0)} — ${fmt(100 * peak / bw, 0)} % полосы канала ${bw} кбит/с`, L, T2 + 8);
   g.fillText(String(Math.round(m2 / 1.25)), 4, y2(m2 / 1.25) + 4); g.fillText("0", L - 14, y2(0) + 4);
-  // ось времени
-  g.strokeStyle = "#94a3b8"; g.beginPath(); g.moveTo(L, H - B); g.lineTo(L + pw, H - B); g.stroke();
+  g.strokeStyle = GRAY; g.beginPath(); g.moveTo(L, H - B); g.lineTo(L + pw, H - B); g.stroke();
   const step = tmax > 600 ? 120 : tmax > 200 ? 30 : 10;
   for (let t = 0; t <= tmax; t += step) g.fillText(String(t), X(t) - 6, H - B + 14);
   g.fillText("t, с", L + pw + 8, H - B + 14);
@@ -434,15 +753,18 @@ function seriesCsv() {
 // ------------------------------------------------------------------ начало
 async function main() {
   try { build = await (await fetch("version.json", { cache: "no-store" })).json(); } catch { build = {}; }
-  $("ver").textContent = verLine() + " · загрузка среды расчёта (≈ 15–20 МБ при первом открытии)…";
+  $("ver").textContent = verLine() + " · загрузка среды расчёта (≈ 16 МБ при первом открытии)…";
   $("foot").textContent = "Модель исполняется локально в браузере; данные никуда не передаются. " + verLine();
+  applyTerms();
+  initTips();
+  renderCards(null);
   form.addEventListener("change", onInput);
   form.addEventListener("submit", (e) => e.preventDefault());
   $("run").onclick = run;
   $("stop").onclick = stop;
   $("reset").onclick = () => choosePreset(preset);
   $("play").onclick = togglePlay;
-  $("time").oninput = (e) => { stopPlay(); showFrame(Number(e.target.value)); };
+  $("time").oninput = (e) => { stopPlay(); showFrame(Number(e.target.value)); playT = result.frames[frameIdx].t; };
   $("dl_summary").onclick = () => download("summary.json", JSON.stringify(result.summary, null, 2), "application/json");
   $("dl_series").onclick = () => download("series.csv", seriesCsv(), "text/csv");
   $("dl_scenario").onclick = () => download("scenario.json", JSON.stringify(result.scenario, null, 2), "application/json");
@@ -450,5 +772,11 @@ async function main() {
   $("stop").disabled = true;
   startWorker();
 }
+
+// перемотка к моменту модельного времени (для проверок и записи видео)
+window.soglasie = {
+  seek(t) { if (!result) return; stopPlay(); playT = Math.min(t, result.tmax); showFrame(...frameAt(playT)); },
+  get ready() { return !!result; },
+};
 
 main();

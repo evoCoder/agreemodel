@@ -37,10 +37,16 @@ def test_frames_and_progress():
                                  frame_s=2.0, view_uav=2))
     fr = out["frames"]
     assert 30 <= len(fr) <= 40
-    assert {"t", "c", "uavs", "truth", "pic", "view", "groups", "agreed"} <= set(fr[0])
+    assert {"t", "c", "uavs", "edges", "truth", "pic", "view", "groups", "variants"} <= set(fr[0])
     assert max(f["groups"] for f in fr) == 2
     assert fr[-1]["view"] == 2 and len(fr[-1]["truth"]) == 15
-    assert any(u[0] == 8 for u in fr[-1]["uavs"])  # присоединившийся U09
+    assert any(u[0] == 8 and u[4] for u in fr[-1]["uavs"])  # присоединившийся U09
+    assert any(u[0] == 5 and not u[4] for u in fr[-1]["uavs"])  # отказавший U06
+    mid = next(f for f in fr if f["t"] == 20)  # разрыв: две подгруппы, связей между ними нет
+    g = {u[0]: u[3] for u in mid["uavs"]}
+    assert all(g[i] == g[j] for i, j in mid["edges"]) and mid["groups"] == 2
+    last = fr[-1]  # после восстановления у всех бортов одни и те же сведения
+    assert len({u[6] for u in last["uavs"] if u[4]}) <= 2
     pct = [m["pct"] for m in msgs if m["type"] == "progress"]
     assert pct == sorted(pct) and pct[-1] >= 99
 

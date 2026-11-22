@@ -52,42 +52,45 @@ const runAndWait = async () => {
 
 await page.goto(url);
 await clock();
-await caption("Симулятор «Согласие»: согласование информационной картины между БВС (лот 1, ФТ № 1). Открываем страницу — сервер и регистрация не нужны.", 0);
+await caption("Симулятор «Согласие»: согласование информационной картины между БВС (лот 1, ФТ № 1). Сервер и регистрация не нужны — расчёт идёт в браузере.", 0);
 await page.waitForFunction(() => !document.getElementById("run").disabled, null, { timeout: 180000 });
-await caption("Среда расчёта загружена: модель на Python выполняется прямо в браузере. Вверху — версия модели и коммит репозитория.", 5);
-
-await caption("Сценарий С1: 8 БВС без ГНСС, разрыв связи 3 мин (две подгруппы 4 + 4), отказ U06 во время разрыва, присоединение нового U09.", 6);
-await page.hover("#run");
-await caption("Запускаем расчёт. Строка хода выполнения показывает модельное время.", 0);
+await caption("Вверху — что моделируется: 8 бортов ведут общую картину; при разрыве связи картины расходятся; технология восстанавливает согласованность не более чем за 1,5 с.", 9);
+await caption("Сценарий С1: связь рвётся на 3 минуты, группа делится на две подгруппы по 4 борта; во время разрыва отказывает U06, после — присоединяется новый U09.", 7);
+await caption("Запускаем расчёт.", 0);
 await runAndWait();
-await scrollTo("#metrics", "start");
-await caption("Показатели ФТ № 1 против требований: квант обработки ≤ 0,5 с, восстановление согласованности после разрыва ≤ 1,5 с, совпадение картин всех бортов, потери записей.", 8);
-
-await scrollTo("#map", "center");
-await page.$eval("#time", (e) => { e.value = 0; e.dispatchEvent(new Event("input")); });
-await caption("Карта: путь роя, объекты эталона (кружки) и картина борта U01 — верные объекты, дубликаты, ложные. Врезка — строй и подгруппы связи.", 0);
+await scrollTo("#cards", "start");
+await caption("Результат — четыре главных показателя ФТ № 1 с требованиями: восстановление согласованности, получение картины новым бортом, потери записей, логические дубликаты.", 9);
+await scrollTo("#story", "center");
+await page.evaluate(() => window.soglasie.seek(0));
+await caption("«Что происходит»: вверху — время и события; слева — строй и радиосвязь; справа — картины бортов.", 0);
 await page.click("#play");
-await pause(9);
-await caption("Во время разрыва подгруппы работают автономно (два цвета во врезке); после восстановления связи картины сходятся.", 8);
-await page.waitForFunction(() => document.getElementById("play").textContent === "▶", null, { timeout: 60000 }).catch(() => {});
-await scrollTo("#chart", "center");
-await caption("Ход прогона: число подгрупп связи, моменты восстановления согласованности (◆ с временем), загрузка канала против его полосы.", 7);
+await page.waitForFunction(() => parseFloat(document.getElementById("tlabel").textContent) >= 40, null, { timeout: 60000 });
+await caption("Разрыв связи: подгруппы не слышат друг друга, у каждой свои сведения — картины расходятся (синие и оранжевые полосы).", 0);
+await page.waitForFunction(() => parseFloat(document.getElementById("tlabel").textContent) >= 195, null, { timeout: 120000 });
+await caption("Связь восстановлена: борта обмениваются накопленными сведениями — воспроизведение замедлено.", 0);
+await page.waitForFunction(() => parseFloat(document.getElementById("tlabel").textContent) >= 203, null, { timeout: 120000 });
+await caption("Картины всех бортов снова совпадают — согласованность восстановлена за доли секунды.", 0);
+await page.waitForFunction(() => document.getElementById("play").textContent === "▶", null, { timeout: 120000 });
+await pause(2);
+await scrollTo("#map", "center");
+await caption("Карта маршрута: путь группы, реальные объекты (объекты эталона) и объекты в картине выбранного борта.", 6);
 
 await page.evaluate(() => window.scrollTo({ top: 0, behavior: "smooth" }));
 await pause(1);
 await scrollTo("input[name=loss]", "center");
-await caption("Изменяем исходные данные: потери сообщений в канале 5 % → 30 %.", 0);
+await caption("Изменяем исходные данные: потери радиосообщений 5 % → 30 %.", 0);
 await page.click("input[name=loss]", { clickCount: 3 });
 await page.keyboard.type("30", { delay: 150 });
 await page.keyboard.press("Tab");
 await pause(2);
 await caption("Запускаем снова. Сценарий помечен «исходные данные изменены».", 0);
 await runAndWait();
-await scrollTo("#metrics", "start");
-await caption("Результат изменился: при потерях 30 % время согласования растёт — модель правдоподобно реагирует на условия канала; картины в конце совпадают, потерь записей нет.", 9);
-
-await scrollTo("#dl_summary", "center");
-await caption("Результаты выгружаются в тех же файлах, что журнал циклов разработки: summary.json, series.csv, scenario.json.", 6);
+await scrollTo("#cards", "start");
+await caption("При потерях 30 % восстановление согласованности занимает больше времени — модель правдоподобно реагирует на условия канала.", 9);
+await scrollTo("#expert", "start");
+await page.evaluate(() => { document.getElementById("expert").open = true; });
+await pause(1);
+await caption("Для специалистов — загрузка канала, служебные величины и выгрузка результатов в формате журнала циклов разработки.", 7);
 await caption("", 1);
 const video = page.video();
 await ctx.close();
