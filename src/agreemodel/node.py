@@ -115,7 +115,7 @@ class Node:
         self.rto = ncfg.rto_init_s
         self.rtt_samples: list[float] = []
         # источник → (от версии, до версии (0 — всё), срок отправки)
-        self.outbox: dict[str, tuple[int, int, float]] = {}
+        self.outbox: dict[str, tuple[list[tuple[int, int]], float]] = {}
         # источник → диапазоны [от, до, «в эфире» до момента] (inf — своя часть в очереди)
         self.air: dict[str, list[list]] = {}
         self.parked: dict[str, dict[int, object]] = {}  # части после пропуска
@@ -148,6 +148,11 @@ class Node:
         H[0, 0] = H[1, 1] = 1.0
         active = [tr for tr in self.tracks if tr.status == "A"]
         preds = [self._predict(tr, t_us) for tr in active]
+        # подтверждённые треки получают обнаружения первыми: иначе новый трек с большой
+        # ковариацией (часто открытый ложным обнаружением рядом с объектом) перехватывает
+        # отметки объекта и раздваивает его трек
+        conf = self.cfg.confirm_hits
+        tier = [0 if self.cfg.confirmed_first and tr.hits >= conf else 1 for tr in active]
         pairs = []
         for j, d in enumerate(dets):
             z = np.array([d.x, d.y])
@@ -157,10 +162,10 @@ class Node:
                 nu = z - x[:2]
                 d2 = float(nu @ np.linalg.solve(S, nu))
                 if d2 <= self.cfg.gate_d2:
-                    pairs.append((d2, i, j))
+                    pairs.append((tier[i], d2, i, j))
         pairs.sort()
         used_t, used_d = set(), set()
-        for _, i, j in pairs:
+        for _, _, i, j in pairs:
             if i in used_t or j in used_d:
                 continue
             used_t.add(i)
@@ -345,9 +350,9 @@ class Node:
         vv = self.store.version_vector()
         return Out("DIGEST", None, vv, 8 + 10 * len(vv))
 
-    def _part_out(self, part) -> Out:
+    def _part_out(self, part, kind: str = "DELTA") -> Out:
         d = Delta((part,))
-        return Out("DELTA", None, d, d.size)
+        return Out(kind, None, d, d.size)
 
     def push_out(self) -> list[Out]:
         """Свои записи после последней рассылки — широковещательными частями."""
@@ -454,7 +459,7 @@ class Node:
 
     def next_timer(self) -> float | None:
         """Ближайший срок: отправка ответа, повтор запроса, конец сбора векторов."""
-        ts = [dl for _, _, dl in self.outbox.values()]
+        ts = [dl for _, dl in self.outbox.values()]
         ts += [p.deadline for p in self.req.values()]
         if self.hold_until > 0.0:
             ts.append(self.hold_until)
@@ -473,34 +478,47 @@ class Node:
                 continue
             ob = self.outbox.get(origin)
             if ob is None:
-                self.outbox[origin] = (d, upto, t_s + self.cfg.response_window_s)
+                self.outbox[origin] = ([(d, upto)], t_s + self.cfg.response_window_s)
             else:
-                u = 0 if (ob[1] == 0 or upto == 0) else max(ob[1], upto)
-                self.outbox[origin] = (min(ob[0], d), u, ob[2])
+                ob[0].append((d, upto))
 
     def flush(self, t_s: float) -> list[tuple[str, int, int, Out]]:
         """Части, срок отправки которых наступил: (источник, от, до, сообщение).
 
-        Если диапазон по источнику уже в эфире (своя передача в очереди или в эфире,
-        или услышанная от соседа) и покрывает запрошенное начало, передаётся только
-        записанное после него."""
+        Запрошенные диапазоны по источнику объединяются; передаются только куски, которых
+        нет в эфире. Ограниченный диапазон (дозапрос пропуска) уходит как FIX — впереди
+        данных в очереди передачи, иначе пропуск ждал бы за всей очередью ответа."""
         res = []
         mine = self.store.version_vector()
         for origin in sorted(self.outbox):
-            d, upto, dl = self.outbox[origin]
+            ranges, dl = self.outbox[origin]
             if dl > t_s + 1e-9:
                 continue
             del self.outbox[origin]
-            hi = mine.get(origin, 0) if upto == 0 else min(upto, mine.get(origin, 0))
-            for a, b in self.uncovered(origin, d, hi, t_s):
-                parts = self.store.parts_for(origin, a, b, self.cfg.max_part_bytes)
-                for part in parts:
-                    res.append((origin, part.from_excl, part.to_incl, self._part_out(part)))
-                if len(parts) > 1:
-                    # замыкающая пустая часть (b, b]: если последняя часть потеряна,
-                    # получатель увидит пропуск по ней и дозапросит сразу
-                    end = DeltaPart(origin, b, b, ())
-                    res.append((origin, b, b, self._part_out(end)))
+            have = mine.get(origin, 0)
+            ivs = sorted((d, have if upto == 0 else min(upto, have), upto != 0)
+                         for d, upto in ranges)
+            merged: list[list] = []
+            for d, hi, fix in ivs:
+                if hi <= d:
+                    continue
+                if merged and d <= merged[-1][1]:
+                    m = merged[-1]
+                    m[1], m[2] = max(m[1], hi), m[2] and fix
+                else:
+                    merged.append([d, hi, fix])
+            for d, hi, fix in merged:
+                for a, b in self.uncovered(origin, d, hi, t_s):
+                    parts = self.store.parts_for(origin, a, b, self.cfg.max_part_bytes)
+                    kind = "FIX" if fix else "DELTA"
+                    for part in parts:
+                        res.append((origin, part.from_excl, part.to_incl,
+                                    self._part_out(part, kind)))
+                    if len(parts) > 1:
+                        # замыкающая пустая часть (b, b]: если последняя часть потеряна,
+                        # получатель увидит пропуск по ней и дозапросит сразу
+                        end = DeltaPart(origin, b, b, ())
+                        res.append((origin, b, b, self._part_out(end, kind)))
         return res
 
     def _on_air(self, origin: str, f: int, to: int, t_done: float) -> list:
@@ -509,12 +527,15 @@ class Node:
         lst.append(e)
         return e
 
-    def uncovered(self, origin: str, d: int, hi: int, t_s: float) -> list[tuple[int, int]]:
-        """Куски диапазона (d, hi], не покрытые тем, что сейчас в эфире или в очереди."""
+    def uncovered(self, origin: str, d: int, hi: int, t_s: float,
+                  queued_covers: bool = True) -> list[tuple[int, int]]:
+        """Куски диапазона (d, hi], не покрытые тем, что сейчас в эфире или в очереди
+        (queued_covers=False — своя часть, ещё стоящая в очереди, не покрывает)."""
         lst = self.air.get(origin)
         if lst:
             lst[:] = [e for e in lst if e[2] >= t_s]
-        ivs = sorted((f, to) for f, to, _ in (lst or ()) if to > d and f < hi)
+        ivs = sorted((f, to) for f, to, te in (lst or ()) if to > d and f < hi
+                     and (queued_covers or te != math.inf))
         out, x = [], d
         for f, to in ivs:
             if f > x:

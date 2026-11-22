@@ -1,5 +1,5 @@
 {
-  "scenario_file": "scenarios/v200_4x4.toml",
+  "scenario_file": "scenarios/base.toml",
   "seeds": [
     1,
     2,
@@ -7,22 +7,24 @@
     4,
     5
   ],
-  "fixed": [],
+  "fixed": [
+    "net.loss=0.1"
+  ],
   "variants": [
     {}
   ],
   "scenario": {
     "run": {
-      "name": "v200_4x4",
+      "name": "base",
       "seed": 7,
-      "duration_s": 990,
+      "duration_s": 1080,
       "dt_s": 0.1,
       "sample_s": 0.5,
       "settle_s": 3.0
     },
     "swarm": {
       "n_uav": 8,
-      "speed_kmh": 200,
+      "speed_kmh": 100,
       "altitude_m": 150,
       "spacing_m": 4.0,
       "columns": 4,
@@ -73,6 +75,7 @@
       "gate_d2": 13.8,
       "relaxed_gate_d2": 0.0,
       "merge_d2": 6.0,
+      "confirmed_first": true,
       "q_accel": 1.0,
       "init_vel_sigma": 5.0
     },
@@ -98,12 +101,13 @@
       "frag_overhead_bytes": 0,
       "priority_kinds": [
         "DIGEST",
-        "REQ"
+        "REQ",
+        "FIX"
       ],
       "partition": [
         {
-          "start_s": 30,
-          "end_s": 930,
+          "start_s": 60,
+          "end_s": 960,
           "groups": [
             [
               0,
@@ -123,12 +127,12 @@
     },
     "event": [
       {
-        "t_s": 300,
+        "t_s": 400,
         "kind": "fail",
         "uav": 5
       },
       {
-        "t_s": 960,
+        "t_s": 1000,
         "kind": "join",
         "uav": 8
       }

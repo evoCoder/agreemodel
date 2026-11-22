@@ -149,7 +149,7 @@ class Simulation:
                         self._emit(t, m.dst, out)
                 elif m.kind == "REQ":
                     node.on_request_c1(t, m.payload)
-                elif m.kind == "DELTA":
+                elif m.kind in ("DELTA", "FIX"):
                     for out in node.on_delta_c1(t, m.src, m.payload):
                         self._emit(t, m.dst, out)
             else:

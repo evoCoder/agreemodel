@@ -90,6 +90,8 @@ class NodeCfg:
     # слияние своих треков: два активных трека борта, чьи оценки совпадают, — один объект;
     # младший закрывается признаком «M» (объединён) и в картину не входит
     merge_d2: float = 6.0  # порог квадрата расстояния Махаланобиса; 0 — отключено
+    # подтверждённые треки получают обнаружения раньше новых (False — как в циклах 0–1)
+    confirmed_first: bool = True
     q_accel: float = 1.0
     init_vel_sigma: float = 5.0
 
@@ -124,7 +126,7 @@ class NetCfg:
     medium: str = "per_node"  # per_node — свой канал у борта; shared — общая радиосреда
     mtu_bytes: int = 512  # наибольший пакет канала; сообщение длиннее режется на пакеты
     frag_overhead_bytes: int = 0  # служебные байты канального уровня на пакет
-    priority_kinds: list[str] = field(default_factory=lambda: ["DIGEST", "REQ"])
+    priority_kinds: list[str] = field(default_factory=lambda: ["DIGEST", "REQ", "FIX"])
     partition: list[PartitionCfg] = field(default_factory=list)
 
 
