@@ -1,0 +1,71 @@
+{
+  "scenario": "v200_isolated",
+  "seed": 3,
+  "duration_s": 990,
+  "uav_alive": 8,
+  "quantum_s": {
+    "max": 0.2,
+    "p95": 0.2
+  },
+  "picture_compute_ms": {
+    "p95": 8.81,
+    "max": 21.81
+  },
+  "restores": [
+    {
+      "t_s": 930,
+      "kind": "partition_end",
+      "store_conv_s": 0.9
+    },
+    {
+      "t_s": 960,
+      "kind": "join U09",
+      "store_conv_s": 1.1
+    }
+  ],
+  "settle_conv_s": 0.4,
+  "final_pictures_identical": true,
+  "records_union": 334,
+  "records_missing_per_uav": {
+    "U01": 0,
+    "U02": 0,
+    "U03": 0,
+    "U04": 0,
+    "U05": 0,
+    "U07": 0,
+    "U08": 0,
+    "U09": 0
+  },
+  "picture": {
+    "objects": 46,
+    "truth_detected": 46,
+    "truth_covered": 46,
+    "duplicates": 0,
+    "false_objects": 0,
+    "mixed_objects": 0,
+    "conflicts_marked": 0
+  },
+  "fix_latency_s": {
+    "median": 0.1,
+    "p95": 0.2,
+    "max": 0.2
+  },
+  "detect_to_fix_s": {
+    "median": 0.9,
+    "p95": 1.8,
+    "max": 4.0
+  },
+  "store_kbytes_max": 29.3,
+  "net": {
+    "medium": "shared",
+    "protocol": "c1",
+    "mbytes_sent": 0.82,
+    "kbps_per_uav": 0.9,
+    "msgs_sent": 14971,
+    "msgs_lost": 2891,
+    "deliveries": 59141,
+    "air_busy_pct": 1.4
+  },
+  "wall_s": 40.6,
+  "version": "1.0.0"
+}

@@ -1,0 +1,65 @@
+{
+ "detect_to_fix_s": {
+  "max": 4.0,
+  "median": 0.9,
+  "p95": 1.8
+ },
+ "duration_s": 990,
+ "final_pictures_identical": true,
+ "fix_latency_s": {
+  "max": 0.2,
+  "median": 0.1,
+  "p95": 0.2
+ },
+ "net": {
+  "air_busy_pct": 1.4,
+  "deliveries": 59141,
+  "kbps_per_uav": 0.9,
+  "mbytes_sent": 0.82,
+  "medium": "shared",
+  "msgs_lost": 2891,
+  "msgs_sent": 14971,
+  "protocol": "c1"
+ },
+ "picture": {
+  "conflicts_marked": 0,
+  "duplicates": 0,
+  "false_objects": 0,
+  "mixed_objects": 0,
+  "objects": 46,
+  "truth_covered": 46,
+  "truth_detected": 46
+ },
+ "quantum_s": {
+  "max": 0.2,
+  "p95": 0.2
+ },
+ "records_missing_per_uav": {
+  "U01": 0,
+  "U02": 0,
+  "U03": 0,
+  "U04": 0,
+  "U05": 0,
+  "U07": 0,
+  "U08": 0,
+  "U09": 0
+ },
+ "records_union": 334,
+ "restores": [
+  {
+   "kind": "partition_end",
+   "store_conv_s": 0.9,
+   "t_s": 930
+  },
+  {
+   "kind": "join U09",
+   "store_conv_s": 1.1,
+   "t_s": 960
+  }
+ ],
+ "scenario": "v200_isolated",
+ "seed": 3,
+ "settle_conv_s": 0.4,
+ "store_kbytes_max": 29.3,
+ "uav_alive": 8
+}
