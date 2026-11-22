@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>«Согласие» — симулятор согласования информационной картины между БВС</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>«Согласие» — симулятор согласования информационной картины между БВС</h1>
+  <p class="sub">Лот 1, ФТ № 1. Расчёт выполняется в этом браузере (Python в WebAssembly), сервер и регистрация не нужны.</p>
+  <p class="ver" id="ver">Загрузка среды расчёта…</p>
+</header>
+
+<main>
+  <section class="col-left">
+    <h2>1. Сценарий самопроверки</h2>
+    <div id="presets"></div>
+
+    <h2>2. Исходные данные</h2>
+    <form id="form" autocomplete="off">
+      <fieldset>
+        <legend>Разрыв связи</legend>
+        <label>Состав подгрупп
+          <select name="split">
+            <option value="none">нет разрыва</option>
+            <option value="4+4">4 + 4</option>
+            <option value="3+5">3 + 5</option>
+            <option value="2+2+4">2 + 2 + 4</option>
+            <option value="custom" disabled>по сценарию</option>
+          </select></label>
+        <label>Начало, с <input name="gap_start" type="number" min="0" step="1"></label>
+        <label>Конец, с <input name="gap_end" type="number" min="0" step="1"></label>
+        <p class="hint" id="gap_hint"></p>
+      </fieldset>
+      <fieldset>
+        <legend>Канал связи</legend>
+        <label>Потери сообщений, % <input name="loss" type="number" min="0" max="60" step="1"></label>
+        <label>Задержка, мс <input name="latency" type="number" min="1" max="1000" step="1"></label>
+        <label>Полоса, кбит/с <input name="bandwidth" type="number" min="16" max="10000" step="1"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Борты и объекты</legend>
+        <label>Ошибка навигации без ГНСС, м <input name="nav_sigma" type="number" min="0" max="50" step="0.5"></label>
+        <label>Объектов интереса <input name="objects" type="number" min="0" max="300" step="1"></label>
+        <label><input name="fail_on" type="checkbox"> Отказ борта
+          <select name="fail_uav"></select> на <input name="fail_t" type="number" min="0" step="1" class="short"> с</label>
+        <label><input name="join_on" type="checkbox"> Присоединение нового борта на
+          <input name="join_t" type="number" min="0" step="1" class="short"> с</label>
+      </fieldset>
+      <fieldset>
+        <legend>Прогон</legend>
+        <label>Длительность, с <input name="duration" type="number" min="30" max="3600" step="10"></label>
+        <label>Начальное число (seed) <input name="seed" type="number" min="0" step="1"></label>
+        <label>Картина какого борта показывать <select name="view"></select></label>
+      </fieldset>
+      <details>
+        <summary>Все параметры модели</summary>
+        <div id="all"></div>
+      </details>
+    </form>
+    <div class="buttons">
+      <button id="run" disabled>Запустить</button>
+      <button id="stop" disabled>Остановить</button>
+      <button id="reset" disabled>Сбросить к сценарию</button>
+    </div>
+    <div class="progress"><div id="bar"></div><span id="ptext"></span></div>
+  </section>
+
+  <section class="col-right">
+    <h2>3. Показатели ФТ № 1</h2>
+    <table id="metrics"><tbody><tr><td class="muted">Запустите сценарий.</td></tr></tbody></table>
+
+    <h2>4. Картина и связь</h2>
+    <canvas id="map" width="720" height="460"></canvas>
+    <div class="legend">
+      <span><i class="d ok"></i>объект картины — верно</span>
+      <span><i class="d dup"></i>дубликат</span>
+      <span><i class="d false"></i>ложный</span>
+      <span><i class="d mixed"></i>смешанный</span>
+      <span><i class="d truth"></i>объект эталона (истина)</span>
+      <span><i class="d swarm"></i>рой и его путь, пунктир — зона обзора</span>
+    </div>
+    <div class="slider"><button id="play" disabled>▶</button>
+      <input id="time" type="range" min="0" max="0" value="0" disabled><span id="tlabel"></span></div>
+
+    <h2>5. Ход прогона</h2>
+    <canvas id="chart" width="720" height="260"></canvas>
+
+    <h2>6. Результаты</h2>
+    <div class="buttons">
+      <button id="dl_summary" disabled>summary.json</button>
+      <button id="dl_series" disabled>series.csv</button>
+      <button id="dl_scenario" disabled>scenario.json</button>
+    </div>
+    <p class="hint">Те же файлы и поля, что в журнале циклов разработки (<code>journal/cN/</code>).</p>
+  </section>
+</main>
+<footer id="foot"></footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>
