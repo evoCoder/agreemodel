@@ -272,7 +272,7 @@ def compute_picture(records: Iterable[Record], cfg: FusionCfg) -> Picture:
 
 
 def _register_builtin() -> None:
-    from .similarity import AiAssociator  # модель сходства (ИИ), чат 2
+    from .similarity import AiAssociator  # модель сходства (ИИ)
 
     register_associator("ai", AiAssociator)
 

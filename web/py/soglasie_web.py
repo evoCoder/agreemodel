@@ -129,7 +129,7 @@ class FrameRecorder:
 
 
 def picture_quality(pic: Any, truth_of: dict) -> dict[str, int]:
-    """Качество картины по эталону — как в итогах прогона и tools/eval_assoc.py (чат 2)."""
+    """Качество картины по эталону — как в итогах прогона и tools/eval_assoc.py."""
     majority: Counter = Counter()
     false_obj = mixed = 0
     for o in pic.objects:
@@ -153,7 +153,7 @@ def compare_association(sim: Simulation, view: int) -> dict[str, Any]:
     """Картина одного борта по одним и тем же итоговым сведениям — правилами и моделью ИИ.
 
     Обмен от стратегии ассоциации не зависит, поэтому сравнение на одном хранилище точное
-    (так же сравнивает чат 2 в журнале цикла 4).
+    (так же, как в журнале цикла 4).
     """
     alive = [i for i, n in sim.nodes.items() if sim.world.uavs[i].alive]
     board = view if view in alive else alive[0]
