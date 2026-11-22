@@ -6,7 +6,8 @@
 
 Кадр (каждые ``frame_s`` модельного времени):
   t, c       — время, центр группы;
-  uavs       — [номер, x, y, подгруппа, работает, объектов в картине, сведений, вариант картины];
+  uavs       — [номер, x, y, подгруппа, работает, объектов в картине, сведений, вариант картины,
+                объектов, общих для всех работающих бортов, объектов, известных только части бортов];
                «сведений» — число изменений, известных борту (сумма вектора версий хранилища);
                «вариант картины» — номер различающегося набора объектов картины
                (у бортов с одинаковым набором — один номер);
@@ -60,6 +61,13 @@ def frame(sim: Simulation, t: float, alive: list[int], view: int) -> dict[str, A
             row[6] = sum(node.store.version_vector().values())
             row[7] = variants.setdefault(oids, len(variants))
         uavs.append(row)
+    # сколько объектов картины борта есть у всех работающих бортов, а сколько — только у части
+    oid_sets = {u[0]: frozenset(o.oid for o in sim.nodes[u[0]].picture.objects)
+                for u in uavs if u[4] and sim.nodes[u[0]].picture}
+    common = frozenset.intersection(*oid_sets.values()) if oid_sets else frozenset()
+    for u in uavs:
+        own = oid_sets.get(u[0], frozenset())
+        u += [len(own & common), len(own - common)]
     edges = [[i, j] for i in alive for j in sim.net.neighbours(i, t) if i < j and j in alive_set]
     live = [u for u in uavs if u[4]]
     cx = sum(u[1] for u in live) / len(live)

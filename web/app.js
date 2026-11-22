@@ -547,28 +547,29 @@ function drawStory(i, alpha = 0) {
   g.fillStyle = INK; g.font = "bold 14px system-ui, sans-serif";
   g.fillText("Картины бортов", x0, top + 8);
   g.font = "12px system-ui, sans-serif"; g.fillStyle = MUTED;
-  g.fillText("полоса — сколько сведений у борта; одинаковый цвет — одинаковая картина", x0, top + 26);
+  g.fillText("полоса — сколько сведений у борта; одинаковый цвет — одинаковая картина;", x0, top + 26);
+  g.fillText("точки — объекты в картине борта: ● есть у всех бортов, ○ только у своей подгруппы", x0, top + 40);
   const div = result.diverged[i];
   const nv = fr.variants;
   const syncing = result.events.find((e) => e.kind !== "fail" && e.conv !== null && tNow >= e.t && tNow < e.t + e.conv);
   g.font = "bold 16px system-ui, sans-serif";
   if (syncing) {
     g.fillStyle = "#b45309";
-    g.fillText(syncing.kind === "join" ? "Новый борт получает картину группы…" : "Связь восстановлена — идёт согласование картин…", x0, top + 52);
+    g.fillText(syncing.kind === "join" ? "Новый борт получает картину группы…" : "Связь восстановлена — идёт согласование картин…", x0, top + 64);
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#92400e";
-    g.fillText(`борта обмениваются накопленными сведениями: ${fmt(tNow - syncing.t, 2)} с`, x0, top + 68);
+    g.fillText(`борта обмениваются накопленными сведениями: ${fmt(tNow - syncing.t, 2)} с`, x0, top + 80);
   } else if (div) {
-    g.fillStyle = RED; g.fillText(`Картины расходятся: ${nv} разные картины`, x0, top + 52);
+    g.fillStyle = RED; g.fillText(`Картины расходятся: ${nv} разные картины`, x0, top + 64);
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#7f1d1d";
-    g.fillText("у каждой подгруппы только свои сведения", x0, top + 68);
+    g.fillText("у каждой подгруппы только свои сведения", x0, top + 80);
   } else {
-    g.fillStyle = GREEN; g.fillText("✓ Картины всех бортов совпадают", x0, top + 52);
+    g.fillStyle = GREEN; g.fillText("✓ Картины всех бортов совпадают", x0, top + 64);
     const rec = result.events.filter((e) => e.kind !== "fail" && e.conv !== null && fr.t >= e.t && fr.t <= e.t + e.conv + 15).pop();
-    if (rec) { g.font = "12px system-ui, sans-serif"; g.fillStyle = "#166534"; g.fillText(rec.kind === "join" ? `новый борт получил картину за ${fmt(rec.conv)} с` : `согласованность восстановлена за ${fmt(rec.conv)} с после возобновления связи`, x0, top + 68); }
+    if (rec) { g.font = "12px system-ui, sans-serif"; g.fillStyle = "#166534"; g.fillText(rec.kind === "join" ? `новый борт получил картину за ${fmt(rec.conv)} с` : `согласованность восстановлена за ${fmt(rec.conv)} с после возобновления связи`, x0, top + 80); }
   }
   const rows = sce.swarm.n_uav + Object.keys(result.joinT).length;
-  const rh = Math.min(30, (H - top - 92) / rows), ry0 = top + 84;
-  const bx = x0 + 70, bw = pw - 70 - 230;
+  const rh = Math.min(30, (H - top - 104) / rows), ry0 = top + 96;
+  const bx = x0 + 52, bw = 170, dx0 = bx + bw + 112;
   for (let r = 0; r < rows; r++) {
     const u = byIdx[r], y = ry0 + r * rh;
     g.font = "12px system-ui, sans-serif";
@@ -579,15 +580,28 @@ function drawStory(i, alpha = 0) {
     if (!u) {
       const coming = syncing && syncing.kind === "join" && nx.uavs.some((q) => q[0] === r);
       g.fillStyle = coming ? "#b45309" : GRAY;
-      g.fillText(coming ? "присоединяется — получает картину группы" : "ещё не в группе", bx + bw + 10, y + rh / 2 + 2);
+      g.fillText(coming ? "присоединяется — получает картину группы" : "ещё не в группе", bx + bw + 8, y + rh / 2 + 2);
       continue;
     }
-    if (!u[4]) { g.fillStyle = GRAY; g.fillText("отказ — не работает", bx + bw + 10, y + rh / 2 + 2); continue; }
+    if (!u[4]) { g.fillStyle = GRAY; g.fillText("отказ — не работает", bx + bw + 8, y + rh / 2 + 2); continue; }
     const rec = u[6];  // значения — ровно из кадра модели, без интерполяции
     g.fillStyle = syncing ? (u[7] === 0 ? "#f59e0b" : "#fbbf24") : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
     g.fillRect(bx, y + 3, Math.max(2, bw * rec / result.maxRec), rh - 10);
     g.fillStyle = INK;
-    g.fillText(`объектов ${u[5]} · сведений ${int(rec)}`, bx + bw + 10, y + rh / 2 + 2);
+    g.fillText(`сведений ${int(rec)}`, bx + bw + 8, y + rh / 2 + 2);
+    // точки объектов: общие для всех бортов — залитые, известные только части бортов — полые
+    const nC = u[8] || 0, nO = u[9] || 0, n = nC + nO;
+    const room = W - 20 - dx0 - 36, step = n ? Math.min(11, room / n) : 11, rd = Math.max(2, Math.min(4, step / 2 - 0.5));
+    const cy = y + rh / 2 - 2;
+    const ccol = syncing ? "#d97706" : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
+    for (let j = 0; j < n; j++) {
+      const cx = dx0 + j * step + rd;
+      g.beginPath(); g.arc(cx, cy, rd, 0, 2 * Math.PI);
+      if (j < nC) { g.fillStyle = "#334155"; g.fill(); }
+      else { g.strokeStyle = ccol; g.lineWidth = 1.6; g.stroke(); g.lineWidth = 1; }
+    }
+    g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
+    g.fillText(String(n), dx0 + n * step + 4, y + rh / 2 + 2);
   }
 }
 
