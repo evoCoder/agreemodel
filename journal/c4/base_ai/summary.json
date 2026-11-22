@@ -1,0 +1,45 @@
+[
+  {
+    "runs": 10,
+    "restore_s": {
+      "max": 1.3,
+      "p95": 1.3,
+      "median": 1.0,
+      "not_reached": 0
+    },
+    "join_s": {
+      "max": 1.4,
+      "p95": 1.4,
+      "median": 1.0,
+      "not_reached": 0
+    },
+    "quantum_max_s": {
+      "max": 0.2,
+      "p95": 0.2,
+      "median": 0.2,
+      "not_reached": 0
+    },
+    "settle_s": {
+      "max": 0.4,
+      "p95": 0.4,
+      "median": 0.1,
+      "not_reached": 0
+    },
+    "fix_p95_s": {
+      "max": 0.2,
+      "p95": 0.2,
+      "median": 0.2,
+      "not_reached": 0
+    },
+    "fix_max_s": {
+      "max": 0.2,
+      "p95": 0.2,
+      "median": 0.2,
+      "not_reached": 0
+    },
+    "all_identical": true,
+    "missing_total": 0,
+    "kbps_per_uav_median": 8.3,
+    "duplicates_median": 0
+  }
+]
