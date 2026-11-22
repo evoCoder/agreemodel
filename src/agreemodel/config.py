@@ -62,10 +62,36 @@ class NodeCfg:
     publish_period_s: float = 0.25
     picture_period_s: float = 0.25
     gossip_period_s: float = 0.2
-    request_timeout_s: float = 0.6
+    request_timeout_s: float = 0.6  # c0: фиксированный срок ожидания ответа на запрос
+    rto_init_s: float = 0.3  # c1: срок ожидания до первых замеров RTT
+    rto_min_s: float = 0.12  # c1: границы адаптивного срока ожидания (RFC 6298)
+    rto_max_s: float = 1.0
+    rto_backoff: float = 1.5  # c1: множитель срока при повторе (потери в радиоканале
+    #                           случайные, а не от перегрузки — удвоение TCP избыточно)
+    request_fanout: int = 1  # у скольких соседей запрашивать недостающее (первая попытка)
+    retry_fanout: int = 2  # у скольких соседей — повтор
+    busy_recent_s: float = 0.05  # эфир «занят», если передача шла в последние столько секунд
+    response_window_s: float = 0.01  # окно объединения запросов в одну рассылку дельты
+    discover_s: float = 0.1  # сбор векторов новых соседей перед запросом (один ответчик)
+    nack_timeout_s: float = 0.25  # c1: срок ожидания ответа на дозапрос пропуска и продления
+    #                                 при поступлении данных (ответ — одна-две части)
+    max_part_bytes: int = 480  # c1: дельта режется на части не больше (одна часть — один пакет)
+    park_parts: int = 256  # c1: сколько частей после пропуска хранить до его заполнения
+    push_own: bool = True  # сразу рассылать свои новые записи (pull — только для досылки)
+    protocol: str = "c1"  # c1 — текущий обмен; c0 — обмен цикла 0 (для сравнения)
     track_lost_s: float = 4.0
     confirm_hits: int = 3
     gate_d2: float = 13.8  # χ²₂(0,999)
+    # второй проход: обнаружение вне строба, но рядом с треком, не получившим отметку в
+    # этом кадре, продолжает этот трек (иначе открылся бы второй трек того же объекта)
+    # отключено: в цикле 2 при 25 давало ложные объекты (ложная отметка продолжает трек
+    # без своей отметки и уводит его), дубликаты снимает слияние своих треков
+    relaxed_gate_d2: float = 0.0
+    # слияние своих треков: два активных трека борта, чьи оценки совпадают, — один объект;
+    # младший закрывается признаком «M» (объединён) и в картину не входит
+    merge_d2: float = 6.0  # порог квадрата расстояния Махаланобиса; 0 — отключено
+    # подтверждённые треки получают обнаружения раньше новых (False — как в циклах 0–1)
+    confirmed_first: bool = True
     q_accel: float = 1.0
     init_vel_sigma: float = 5.0
 
@@ -80,6 +106,7 @@ class FusionCfg:
     stale_sigma_m: float = 5.0
     uav_timeout_s: float = 3.0
     cell_m: float = 150.0
+    association: str = "rules"  # стратегия решения «трек — объект» (см. fusion.ASSOCIATORS)
 
 
 @dataclass
@@ -96,6 +123,10 @@ class NetCfg:
     loss: float = 0.05
     bandwidth_kbps: float = 500.0
     range_m: float = 3000.0
+    medium: str = "per_node"  # per_node — свой канал у борта; shared — общая радиосреда
+    mtu_bytes: int = 512  # наибольший пакет канала; сообщение длиннее режется на пакеты
+    frag_overhead_bytes: int = 0  # служебные байты канального уровня на пакет
+    priority_kinds: list[str] = field(default_factory=lambda: ["DIGEST", "REQ", "FIX"])
     partition: list[PartitionCfg] = field(default_factory=list)
 
 
@@ -142,8 +173,17 @@ def _build(cls: type, raw: dict[str, Any]) -> Any:
 
 
 def load(path: str | Path) -> Scenario:
+    """Сценарий из TOML или JSON (та же структура; JSON — как scenario.json выгрузки)."""
+    if str(path).lower().endswith(".json"):
+        import json
+        with open(path, encoding="utf-8") as f:
+            return from_dict(json.load(f))
     with open(path, "rb") as f:
         return _build(Scenario, tomllib.load(f))
+
+
+def from_dict(raw: dict[str, Any]) -> Scenario:
+    return _build(Scenario, raw)
 
 
 def to_dict(obj: Any) -> Any:

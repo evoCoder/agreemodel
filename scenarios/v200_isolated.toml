@@ -1,0 +1,80 @@
+# 200 км/ч, полное отсутствие связи на 15 мин (рекомендация прил. 2): каждый борт
+# изолирован (30–930 с), затем связь восстанавливается у всех сразу; отказ U06, присоединение U09.
+# Базовый модельный сценарий (раздел 2 требований, ФТ № 1, Р1.7):
+# 8 БВС, строй 12 × 4 м (дистанция 4 м ≥ 3 м, размер ≤ 15 м), 100 км/ч, маршрут 30 км,
+# без ГНСС (ошибка навигации — гаусс-марковский процесс), разделение роя на две изолированные
+# подгруппы на 15 мин, отказ одного БВС во время разрыва, присоединение нового после.
+
+[run]
+name = "v200_isolated"
+seed = 7
+duration_s = 990
+dt_s = 0.1
+sample_s = 0.5
+
+[swarm]
+n_uav = 8
+speed_kmh = 200
+altitude_m = 150
+spacing_m = 4.0
+columns = 4
+route_length_km = 30
+
+[objects]
+count = 60
+lateral_m = 300
+moving_fraction = 0.3
+max_speed_mps = 8
+
+[sensor]
+frame_hz = 5
+fov_radius_m = 350
+r50_m = 320
+p_near = 0.95
+sigma0_m = 1.5
+sigma_k = 0.8
+false_per_frame = 0.05
+class_confusion = 0.1
+
+[nav]
+sigma_m = 4.0
+tau_s = 60
+
+[node]
+publish_period_s = 0.25
+picture_period_s = 0.25
+gossip_period_s = 0.2
+request_timeout_s = 0.6
+track_lost_s = 4.0
+confirm_hits = 3
+
+[fusion]
+gate = 4.0
+class_gate = 0.8
+ambiguity_margin = 2.0
+coast_s = 10
+stale_sigma_m = 5
+
+[net]
+latency_ms = 30
+jitter_ms = 10
+loss = 0.05
+bandwidth_kbps = 500
+range_m = 3000
+medium = "shared"  # общая радиосреда: полоса делится между бортами подгруппы
+mtu_bytes = 512
+
+[[net.partition]]
+start_s = 30
+end_s = 930
+groups = [[0], [1], [2], [3], [4], [5], [6], [7]]
+
+[[event]]
+t_s = 300
+kind = "fail"
+uav = 5
+
+[[event]]
+t_s = 960
+kind = "join"
+uav = 8

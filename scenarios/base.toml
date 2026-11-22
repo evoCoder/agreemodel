@@ -59,6 +59,8 @@ jitter_ms = 10
 loss = 0.05
 bandwidth_kbps = 500
 range_m = 3000
+medium = "shared"  # общая радиосреда: полоса делится между бортами подгруппы
+mtu_bytes = 512
 
 [[net.partition]]
 start_s = 60
