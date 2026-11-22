@@ -41,6 +41,7 @@ class ObjectsCfg:
     # cluster_size в круге радиуса cluster_spread_m; 1 — одиночные объекты (как в циклах 0–2)
     cluster_size: int = 1
     cluster_spread_m: float = 20.0
+    cluster_min_sep_m: float = 0.0  # наименьшее расстояние между объектами группы; 0 — не задано
 
 
 @dataclass
@@ -111,6 +112,8 @@ class FusionCfg:
     uav_timeout_s: float = 3.0
     cell_m: float = 150.0
     association: str = "rules"  # стратегия решения «трек — объект» (см. fusion.ASSOCIATORS)
+    ai_model: str = ""  # файл модели сходства для association = "ai"; "" — models/sim_v1.json
+    ai_p_min: float = 0.0  # порог вероятности «тот же объект»; 0 — из файла модели
 
 
 @dataclass

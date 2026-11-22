@@ -139,12 +139,17 @@ class World:
             heading = self.rng.uniform(0, 2 * math.pi)
             out.append(GroundObject(f"T{len(out) + 1:03d}", cls, cx, cy, speed, heading))
             # остальные объекты группы: рядом, того же или соседнего класса, общий курс
+            group = [(cx, cy)]
             for _ in range(min(cfg.cluster_size, cfg.count - len(out) + 1) - 1):
-                a = self.rng.uniform(0, 2 * math.pi)
-                r = cfg.cluster_spread_m * math.sqrt(self.rng.random())
+                for _try in range(50):  # с cluster_min_sep_m = 0 — одна попытка
+                    a = self.rng.uniform(0, 2 * math.pi)
+                    r = cfg.cluster_spread_m * math.sqrt(self.rng.random())
+                    px, py = cx + r * math.cos(a), cy + r * math.sin(a)
+                    if all(math.hypot(px - gx, py - gy) >= cfg.cluster_min_sep_m for gx, gy in group):
+                        break
+                group.append((px, py))
                 c = cls if self.rng.random() < 0.7 else self.rng.randrange(N_CLASSES)
-                out.append(GroundObject(f"T{len(out) + 1:03d}", c, cx + r * math.cos(a),
-                                        cy + r * math.sin(a), speed, heading))
+                out.append(GroundObject(f"T{len(out) + 1:03d}", c, px, py, speed, heading))
         return out
 
     # ------------------------------------------------------------------ шаг

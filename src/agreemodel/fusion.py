@@ -207,6 +207,9 @@ def compute_picture(records: Iterable[Record], cfg: FusionCfg) -> Picture:
     cell = cfg.cell_m
 
     assoc = ASSOCIATORS[cfg.association](cfg)
+    begin = getattr(assoc, "begin", None)
+    if begin is not None:
+        begin(tracks, t_ref)  # стратегии, которым нужны записи членов объекта (ai)
 
     def cell_of(x: float, y: float) -> tuple[int, int]:
         return (math.floor(x / cell), math.floor(y / cell))
@@ -266,3 +269,12 @@ def compute_picture(records: Iterable[Record], cfg: FusionCfg) -> Picture:
     for u in uavs:
         h.update(f"{u.uid}|{u.t_us}|{int(u.alive)};".encode())
     return Picture(t_ref, objs, uavs, h.hexdigest())
+
+
+def _register_builtin() -> None:
+    from .similarity import AiAssociator  # модель сходства (ИИ), чат 2
+
+    register_associator("ai", AiAssociator)
+
+
+_register_builtin()

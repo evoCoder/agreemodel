@@ -7,6 +7,8 @@ dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# обучение модели сходства (tools/train.py); на борту и в сборке не нужно
+train = ["scikit-learn>=1.4"]
 
 [project.scripts]
 agreemodel = "agreemodel.cli:main"
@@ -17,6 +19,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+agreemodel = ["models/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
