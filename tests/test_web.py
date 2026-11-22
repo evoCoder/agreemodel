@@ -55,3 +55,14 @@ def test_scenario_roundtrip():
     raw = sw.base_scenario(str(ROOT / "scenarios" / "base.toml"))
     out = json.loads(sw.run_json(json.dumps(_short()), frame_s=5.0))
     assert set(out["scenario"]) == set(raw)
+
+
+def test_association_compare_matches_board_picture():
+    raw = _short()
+    out = json.loads(sw.run_json(json.dumps(raw), frame_s=5.0))
+    a = out["association"]
+    used = a[a["used"]]
+    p = out["summary"]["picture"]
+    # картина, пересчитанная стратегией борта по его хранилищу, совпадает с итогом прогона
+    assert (used["objects"], used["duplicates"], used["mixed_objects"]) == (p["objects"], p["duplicates"], p["mixed_objects"])
+    assert set(a["ai"]) == set(a["rules"]) and "errors" in a["ai"]

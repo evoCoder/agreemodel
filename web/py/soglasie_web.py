@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from collections import Counter
@@ -27,6 +28,7 @@ from typing import Any, Callable
 
 from agreemodel import __version__
 from agreemodel.config import Scenario, _build, load, to_dict
+from agreemodel.fusion import compute_picture
 from agreemodel.sim import Simulation
 
 Post = Callable[[str], None]
@@ -126,6 +128,47 @@ class FrameRecorder:
                     self.post(json.dumps({"type": "warn", "text": f"кадр {t:.1f} с: {e}"}))
 
 
+def picture_quality(pic: Any, truth_of: dict) -> dict[str, int]:
+    """Качество картины по эталону — как в итогах прогона и tools/eval_assoc.py (чат 2)."""
+    majority: Counter = Counter()
+    false_obj = mixed = 0
+    for o in pic.objects:
+        real = [t for t in (truth_of.get(m) for m in o.members) if t is not None]
+        if not real:
+            false_obj += 1
+            continue
+        majority[Counter(real).most_common(1)[0][0]] += 1
+        if len(set(real)) > 1:
+            mixed += 1
+    detected = {v for v in truth_of.values() if v is not None}
+    q = {"objects": len(pic.objects), "truth_detected": len(detected),
+         "absorbed": len(detected) - len(majority),
+         "duplicates": sum(c - 1 for c in majority.values()),
+         "false_objects": false_obj, "mixed_objects": mixed}
+    q["errors"] = q["absorbed"] + q["duplicates"] + q["false_objects"] + q["mixed_objects"]
+    return q
+
+
+def compare_association(sim: Simulation, view: int) -> dict[str, Any]:
+    """Картина одного борта по одним и тем же итоговым сведениям — правилами и моделью ИИ.
+
+    Обмен от стратегии ассоциации не зависит, поэтому сравнение на одном хранилище точное
+    (так же сравнивает чат 2 в журнале цикла 4).
+    """
+    alive = [i for i, n in sim.nodes.items() if sim.world.uavs[i].alive]
+    board = view if view in alive else alive[0]
+    truth_of: dict[tuple[str, str], str | None] = {}
+    for n in sim.nodes.values():
+        for key, tid in n.truth_of.items():
+            truth_of[(n.uid, key)] = tid
+    records = list(sim.nodes[board].store.records())
+    out: dict[str, Any] = {"board": board, "used": sim.sc.fusion.association}
+    for name in ("rules", "ai"):
+        cfg = dataclasses.replace(sim.sc.fusion, association=name)
+        out[name] = picture_quality(compute_picture(records, cfg), truth_of)
+    return out
+
+
 def run_json(raw_json: str, post: Post | None = None, frame_s: float = 0.5,
              view_uav: int = 0) -> str:
     """Прогон сценария; вход и выход — JSON (удобно для обмена с JavaScript)."""
@@ -133,9 +176,14 @@ def run_json(raw_json: str, post: Post | None = None, frame_s: float = 0.5,
     sc = scenario_from(raw)
     w0 = time.perf_counter()
     rec = FrameRecorder(sc, post, frame_s, view_uav)
-    res = Simulation(sc, on_sample=rec).run(progress=False)
+    sim = Simulation(sc, on_sample=rec)
+    res = sim.run(progress=False)
     summary = res.summary
+    try:
+        assoc = compare_association(sim, view_uav)
+    except Exception as e:  # сравнение — только для показа
+        assoc = {"error": str(e)}
     summary["wall_s"] = round(time.perf_counter() - w0, 1)
     summary["version"] = __version__
     return json.dumps({"summary": summary, "series": res.series, "frames": rec.frames,
-                       "scenario": to_dict(sc)}, ensure_ascii=False)
+                       "scenario": to_dict(sc), "association": assoc}, ensure_ascii=False)
