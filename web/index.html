@@ -60,6 +60,14 @@
           <span>на <input name="join_t" type="number" min="0" step="1" class="short"> с</span></label>
       </fieldset>
       <fieldset>
+        <legend><span data-term="ассоциация наблюдений">Ассоциация наблюдений</span></legend>
+        <label data-hint="association">Способ
+          <select name="association">
+            <option value="ai">модель сходства (ИИ)</option>
+            <option value="rules">правила</option>
+          </select></label>
+      </fieldset>
+      <fieldset>
         <legend>Прогон</legend>
         <label data-hint="duration">Длительность, с <input name="duration" type="number" min="30" max="3600" step="10"></label>
         <label data-hint="seed">Начальное число (seed) <input name="seed" type="number" min="0" step="1"></label>
@@ -81,6 +89,7 @@
   <section class="col-right">
     <h2>3. Результат</h2>
     <div id="cards" class="cards"></div>
+    <div id="ai" class="ai"></div>
 
     <h2>4. Что происходит</h2>
     <p class="hint">Воспроизведение полёта: вверху — время и события, слева — <span data-term="строй">строй</span> и радиосвязь между бортами, справа — <span data-term="картина борта">картины бортов</span>.</p>

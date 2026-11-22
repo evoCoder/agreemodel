@@ -163,6 +163,7 @@ function fillForm(skip) {
   const fe = ev("fail"), je = ev("join");
   set("fail_on", !!fe); set("fail_uav", fe ? fe.uav : 5); set("fail_t", fe ? fe.t_s : Math.round(sc.run.duration_s / 2));
   set("join_on", !!je); set("join_t", je ? je.t_s : Math.round(sc.run.duration_s * 0.9));
+  set("association", sc.fusion.association || "rules");
   set("duration", sc.run.duration_s);
   set("seed", sc.run.seed);
   for (const el of $("all").querySelectorAll("input")) {
@@ -198,6 +199,7 @@ function onInput(e) {
     else if (name === "bandwidth") sc.net.bandwidth_kbps = num(el);
     else if (name === "nav_sigma") sc.nav.sigma_m = num(el);
     else if (name === "objects") sc.objects.count = num(el);
+    else if (name === "association") sc.fusion.association = el.value;
     else if (name === "duration") sc.run.duration_s = num(el);
     else if (name === "seed") sc.run.seed = num(el);
     else if (name.startsWith("fail") || name.startsWith("join")) {
@@ -250,6 +252,7 @@ function run() {
   result = null;
   stopPlay();
   renderCards(null);
+  renderAI(null);
   $("bar").style.width = "0%";
   $("ptext").textContent = "расчёт…";
   runStart = performance.now();
@@ -371,6 +374,25 @@ function cardsData0() {
     t("логический дубликат", "Логические дубликаты", "минимизируются")];
 }
 
+function renderAI(a) {
+  const box = $("ai");
+  if (!a || a.error || !a.rules) { box.innerHTML = ""; return; }
+  const r = a.rules, m = a.ai, used = a.used === "ai" ? "модель сходства (ИИ)" : "правила";
+  const d = m.errors - r.errors, pct = r.errors ? Math.round(100 * d / r.errors) : 0;
+  const verdict = d < 0 ? `<span class="gain">ИИ: ошибок на ${-d} меньше (−${-pct} %)</span>`
+    : d > 0 ? `<span class="loss">ИИ: ошибок на ${d} больше (+${pct} %)</span>` : "<span>одинаково</span>";
+  const row = (name, term, k) => `<tr><td>${term ? `<span data-term="${term}">${name}</span>` : name}</td><td>${r[k]}</td><td>${m[k]}</td></tr>`;
+  box.innerHTML = `<h3>Применение ИИ: <span data-term="ассоциация наблюдений">ассоциация наблюдений</span> правилами и <span data-term="модель сходства наблюдений">моделью сходства</span></h3>
+    <div class="cmp"><div><span data-term="ошибки картины">Ошибки картины</span> борта ${uid(a.board)} (из ${r.truth_detected} обнаруженных реальных объектов):</div>
+    <div class="big">правила ${r.errors}<span class="arrow">→</span>ИИ ${m.errors}</div><div>${verdict}</div></div>
+    <table><tr><th>Ошибка</th><th>Правила</th><th>ИИ</th></tr>
+    ${row("смешанные объекты", "смешанный объект", "mixed_objects")}${row("поглощённые объекты", "поглощённый объект", "absorbed")}
+    ${row("логические дубликаты", "логический дубликат", "duplicates")}${row("ложные объекты", "", "false_objects")}</table>
+    <p>Обе картины построены по одним и тем же итоговым сведениям борта — обмен между бортами от способа ассоциации не зависит. В этом прогоне борта использовали: ${used}.
+    ${r.errors === 0 && m.errors === 0 ? "На одиночных объектах правила не ошибаются; выигрыш ИИ — на группах близких объектов (сценарий С6)." : ""}</p>`;
+  applyTerms(box);
+}
+
 function restoreName(r) {
   if (r.kind === "partition_end") return `<span data-term="восстановление согласованности">Восстановление согласованности</span> после разрыва связи (связь возобновилась на ${r.t_s} с)`;
   if (r.kind.startsWith("join")) return `Получение картины <span data-term="присоединение борта">присоединившимся бортом</span> ${r.kind.split(" ")[1] || ""} (${r.t_s} с)`;
@@ -380,6 +402,7 @@ function restoreName(r) {
 function showResult() {
   const s = result.summary, sce = result.scenario;
   renderCards(s);
+  renderAI(result.association);
   const rows = [["Показатель", "Требование ФТ № 1", "Получено", "", "Что это значит"]];
   rows.push(['<span data-term="квант обработки">Квант обработки</span> и выдачи обновлённого состояния', "≤ 0,5 с",
     `${fmt(s.quantum_s.max)} с`, okMark(s.quantum_s.max <= 0.5), "Как часто каждый борт обновляет свою картину (наибольший интервал за полёт)."]);
@@ -487,9 +510,10 @@ function drawStory(i, alpha = 0) {
     lastRight = Math.max(lastRight, tx + tw + 10);
   }
   g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
-  g.fillText("0 с", L, by - 14); g.fillText(`${Math.round(tmax)} с`, R - 30, by - 14);
-  // бегунок
   const px = X(tNow);
+  if (px - L > 50) g.fillText("0 с", L, by - 14);
+  if (R - px > 60) g.fillText(`${Math.round(tmax)} с`, R - 30, by - 14);
+  // бегунок
   g.strokeStyle = INK; g.lineWidth = 2; g.beginPath(); g.moveTo(px, by - 16); g.lineTo(px, by + bh + 4); g.stroke(); g.lineWidth = 1;
   g.fillStyle = INK; g.font = "bold 13px system-ui, sans-serif";
   const lbl = `${fmt(tNow, 0)} с`; g.fillText(lbl, Math.min(Math.max(px - 14, L), R - 40), by - 20 + 0);
@@ -563,9 +587,21 @@ function drawStory(i, alpha = 0) {
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#7f1d1d";
     g.fillText("у каждой подгруппы только свои сведения", x0, top + 80);
   } else {
-    g.fillStyle = GREEN; g.fillText("✓ Картины всех бортов совпадают", x0, top + 64);
+    // «совпадают» — только если у всех работающих бортов одни и те же сведения; иначе
+    // объекты картин одинаковы, а свежие записи ещё в пути (доходят за доли секунды)
+    const recs = fr.uavs.filter((u) => u[4]).map((u) => u[6]);
+    const lag = Math.max(...recs) - Math.min(...recs);
+    g.fillStyle = GREEN;
+    g.fillText("✓ Картины всех бортов согласованы", x0, top + 64);
     const rec = result.events.filter((e) => e.kind !== "fail" && e.conv !== null && fr.t >= e.t && fr.t <= e.t + e.conv + 15).pop();
-    if (rec) { g.font = "12px system-ui, sans-serif"; g.fillStyle = "#166534"; g.fillText(rec.kind === "join" ? `новый борт получил картину за ${fmt(rec.conv)} с` : `согласованность восстановлена за ${fmt(rec.conv)} с после возобновления связи`, x0, top + 80); }
+    g.font = "12px system-ui, sans-serif"; g.fillStyle = "#166534";
+    const wr = lag === 1 ? "свежая запись" : lag < 5 ? "свежие записи" : "свежих записей";
+    const line = rec
+      ? (rec.kind === "join" ? `новый борт получил картину за ${fmt(rec.conv)} с` : `согласованность восстановлена за ${fmt(rec.conv)} с`) +
+        (lag === 0 ? "; сведения у всех одинаковы" : `; в пути ${lag} ${wr}`)
+      : lag === 0 ? "у всех бортов одни и те же сведения"
+      : `объекты одинаковы; в пути ${lag} ${wr} — дойдут за доли секунды`;
+    g.fillText(line, x0, top + 80);
   }
   const rows = sce.swarm.n_uav + Object.keys(result.joinT).length;
   const rh = Math.min(30, (H - top - 104) / rows), ry0 = top + 96;
