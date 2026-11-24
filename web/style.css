@@ -104,3 +104,5 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
 .ai table { margin-top: 6px; max-width: 640px; }
 .ai td, .ai th { padding: 3px 8px; font-size: 13px; }
 .ai p { margin: 6px 0 0; font-size: 12.5px; color: #475569; }
+#speedval { margin-left: 6px; color: #0f172a; font-size: 14px; }
+#cu_btns button.on { background: #dbeafe; border-color: #2563eb; }

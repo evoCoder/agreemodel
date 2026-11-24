@@ -93,13 +93,19 @@
 
     <h2>4. Что происходит</h2>
     <p class="hint">Воспроизведение полёта: вверху — время и события, слева — <span data-term="строй">строй</span> и радиосвязь между бортами, справа — <span data-term="картина борта">картины бортов</span>.</p>
-    <canvas id="story" width="1040" height="470"></canvas>
+    <canvas id="story" width="1040" height="546"></canvas>
     <div class="slider">
       <button id="play" disabled>▶</button>
       <input id="time" type="range" min="0" max="0" value="0" disabled>
       <span id="tlabel"></span>
-      <label class="speed">скорость <select id="speed"><option value="0">авто</option><option value="5">×5</option><option value="10">×10</option><option value="20">×20</option><option value="50">×50</option></select></label>
+      <label class="speed">скорость <select id="speed"><option value="0">авто</option><option value="5">×5</option><option value="10">×10</option><option value="20">×20</option><option value="50">×50</option></select>
+        <b id="speedval" title="Во сколько раз воспроизведение быстрее модельного времени; скорость постоянна на всём прогоне"></b></label>
     </div>
+
+    <h3>Момент восстановления крупным планом</h3>
+    <p class="hint">Сколько <span data-term="сведения">сведений</span> у каждого борта в первые 2 с после события (шаг модели 0,1 с). Пунктир — всё, что группа накопила к моменту события; когда все линии дошли до него — согласованность восстановлена.</p>
+    <div id="cu_btns" class="buttons"></div>
+    <canvas id="closeup" width="1040" height="300"></canvas>
 
     <h3>Карта маршрута</h3>
     <canvas id="map" width="1040" height="380"></canvas>

@@ -28,7 +28,10 @@ const SPLITS = {
   "2+2+4": [[0, 1], [2, 3], [4, 5, 6, 7]],
 };
 const GROUP = ["#2563eb", "#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d", "#0891b2", "#a16207"];
+const EDGE = ["#93c5fd", "#fdba74", "#c4b5fd", "#5eead4", "#f9a8d4", "#bef264", "#67e8f9", "#fcd34d"];  // светлые варианты GROUP
 const VARIANT = ["#2563eb", "#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d"];
+const BANNER_H = 76;   // полоса плашек событий внизу «Что происходит»
+const BANNER_S = 4.5;  // сколько секунд воспроизведения держится плашка события
 const GREEN = "#16a34a", RED = "#dc2626", GRAY = "#94a3b8", INK = "#0f172a", MUTED = "#475569";
 
 // ------------------------------------------------------------------ среда расчёта
@@ -316,7 +319,7 @@ function prepare() {
       evs.push({ t: r.t_s, kind: "restore", ok: okr, conv: r.store_conv_s,
         text: `связь восстановлена → согласованность восстановлена ${r.store_conv_s === null ? "— не достигнута" : "за " + fmt(r.store_conv_s) + " с"}` });
     else if (r.kind.startsWith("join"))
-      evs.push({ t: r.t_s, kind: "join", ok: okr, conv: r.store_conv_s,
+      evs.push({ t: r.t_s, kind: "join", ok: okr, conv: r.store_conv_s, who: r.kind.split(" ")[1] || "",
         text: `присоединение борта ${r.kind.split(" ")[1] || ""} → получил картину ${r.store_conv_s === null ? "— не получил" : "за " + fmt(r.store_conv_s) + " с"}` });
   }
   evs.sort((a, b) => a.t - b.t);
@@ -449,6 +452,8 @@ function showResult() {
   const t = $("time");
   t.max = result.frames.length - 1; t.disabled = false;
   drawChart();
+  showSpeed();
+  buildCloseup();
   playT = 0;
   showFrame(0);
   startPlay();  // воспроизведение запускается само
@@ -471,9 +476,9 @@ function drawStory(i, alpha = 0) {
   const fr = result.frames[i], sce = result.scenario;
   const nx = result.frames[Math.min(i + 1, result.frames.length - 1)];
   const tNow = fr.t + alpha * (nx.t - fr.t);
-  const cv = $("story"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
-  g.clearRect(0, 0, W, H);
-  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+  const cv = $("story"), g = cv.getContext("2d"), W = cv.width, HF = cv.height, H = HF - BANNER_H;
+  g.clearRect(0, 0, W, HF);
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, HF);
 
   // 1. полоса времени
   const L = 24, R = W - 24, by = 44, bh = 20, tmax = result.tmax;
@@ -530,13 +535,20 @@ function drawStory(i, alpha = 0) {
   g.fillText("линия — борта слышат друг друга по радио", 16, top + 26);
   const P = (u) => { const r = fr.rel[u[0]]; return [cx0 + r[0] * k, cy0 - r[1] * k]; };
   const byIdx = Object.fromEntries(fr.uavs.map((u) => [u[0], u]));
+  // линии связи — одним проходом на цвет, без полупрозрачности
   g.lineWidth = 1.5;
+  const edgeBy = new Map();
   for (const [a, b] of fr.edges) {
     const ua = byIdx[a], ub = byIdx[b];
     if (!ua || !ub) continue;
-    const [x1, y1] = P(ua), [x2, y2] = P(ub);
-    g.strokeStyle = fr.groups > 1 ? GROUP[ua[3] % GROUP.length] + "88" : "#86efac";
-    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    const col = fr.groups > 1 ? EDGE[ua[3] % EDGE.length] : "#86efac";
+    if (!edgeBy.has(col)) edgeBy.set(col, []);
+    edgeBy.get(col).push([P(ua), P(ub)]);
+  }
+  for (const [col, segs] of edgeBy) {
+    g.strokeStyle = col; g.beginPath();
+    for (const [[x1, y1], [x2, y2]] of segs) { g.moveTo(x1, y1); g.lineTo(x2, y2); }
+    g.stroke();
   }
   g.lineWidth = 1;
   for (const u of fr.uavs) {
@@ -630,14 +642,140 @@ function drawStory(i, alpha = 0) {
     const room = W - 20 - dx0 - 36, step = n ? Math.min(11, room / n) : 11, rd = Math.max(2, Math.min(4, step / 2 - 0.5));
     const cy = y + rh / 2 - 2;
     const ccol = syncing ? "#d97706" : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
-    for (let j = 0; j < n; j++) {
-      const cx = dx0 + j * step + rd;
-      g.beginPath(); g.arc(cx, cy, rd, 0, 2 * Math.PI);
-      if (j < nC) { g.fillStyle = "#334155"; g.fill(); }
-      else { g.strokeStyle = ccol; g.lineWidth = 1.6; g.stroke(); g.lineWidth = 1; }
+    // точки — одним проходом: залитые, затем полые
+    if (nC) {
+      g.fillStyle = "#334155"; g.beginPath();
+      for (let j = 0; j < nC; j++) { const cx = dx0 + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
+      g.fill();
+    }
+    if (n > nC) {
+      g.strokeStyle = ccol; g.lineWidth = 1.6; g.beginPath();
+      for (let j = nC; j < n; j++) { const cx = dx0 + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
+      g.stroke(); g.lineWidth = 1;
     }
     g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
     g.fillText(String(n), dx0 + n * step + 4, y + rh / 2 + 2);
+  }
+
+  // плашка события: держится BANNER_S секунд воспроизведения, время идёт равномерно
+  g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(0, H); g.lineTo(W, H); g.stroke();
+  const ban = result.events.filter((e) => e.kind !== "fail" && tNow >= e.t && tNow < e.t + BANNER_S * playSpeed()).pop();
+  if (!ban) {
+    const next = result.events.find((e) => e.t > tNow);
+    g.fillStyle = "#94a3b8"; g.font = "14px system-ui, sans-serif"; g.textAlign = "center";
+    g.fillText(next ? `Далее: ${next.kind === "fail" ? `отказ борта на ${Math.round(next.t)} с` : next.kind === "join" ? `присоединение борта ${next.who} на ${Math.round(next.t)} с` : `восстановление связи на ${Math.round(next.t)} с`}`
+      : result.events.length ? "Все события сценария пройдены" : "В сценарии нет событий", W / 2, H + BANNER_H / 2 + 5);
+    g.textAlign = "start";
+  }
+  if (ban) {
+    const ok = ban.ok, bw2 = 640, bh2 = BANNER_H - 12, bx2 = (W - bw2) / 2, by2 = H + 6;
+    g.fillStyle = ok ? "rgba(240,253,244,.97)" : "rgba(254,242,242,.97)";
+    g.strokeStyle = ok ? GREEN : RED; g.lineWidth = 3;
+    g.beginPath(); g.roundRect ? g.roundRect(bx2, by2, bw2, bh2, 10) : g.rect(bx2, by2, bw2, bh2); g.fill(); g.stroke(); g.lineWidth = 1;
+    g.fillStyle = ok ? "#14532d" : "#7f1d1d"; g.textAlign = "center";
+    g.font = "bold 22px system-ui, sans-serif";
+    const tail = ban.conv === null ? "не достигнуто" : `за ${fmt(ban.conv)} с`;
+    g.fillText(ban.kind === "join" ? `Присоединение борта ${ban.who} → получил картину группы ${tail}` : `Связь восстановлена → картины всех бортов совпали ${tail}`, W / 2, by2 + 30);
+    g.font = "14px system-ui, sans-serif";
+    g.fillText(`требование ФТ № 1 — не более 1,5 с ${ok ? "✓" : "✗"}`, W / 2, by2 + 52);
+    g.textAlign = "start";
+  }
+}
+
+// ------------------------------------------------------------------ крупный план восстановления
+let cuSel = 0;
+
+function buildCloseup() {
+  const box = $("cu_btns"), cs = result.closeups || [];
+  box.innerHTML = "";
+  cs.forEach((c, k) => {
+    const b = document.createElement("button");
+    b.textContent = c.kind === "partition_end" ? `восстановление связи, ${Math.round(c.t_s)} с` : `присоединение борта ${c.kind.split(" ")[1] || ""}, ${Math.round(c.t_s)} с`;
+    b.onclick = () => { cuSel = k; drawCloseup(); };
+    box.appendChild(b);
+  });
+  cuSel = 0;
+  drawCloseup();
+}
+
+function drawCloseup() {
+  const cv = $("closeup"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  const cs = result.closeups || [];
+  [...$("cu_btns").children].forEach((b, k) => b.classList.toggle("on", k === cuSel));
+  if (!cs.length) {
+    g.fillStyle = MUTED; g.font = "14px system-ui, sans-serif";
+    g.fillText("В этом сценарии нет восстановления связи и присоединения бортов.", 20, 40);
+    return;
+  }
+  const c = cs[cuSel], r = result.summary.restores[cuSel];
+  const join = c.kind !== "partition_end", who = join ? Number(c.uav) : -1;
+  const L = 76, R = 24, T = 30, B = 46, pw = W - L - R, ph = H - T - B;
+  const x0 = -0.3, x1 = 2.0, X = (t) => L + ((t - x0) / (x1 - x0)) * pw;
+  const vals = c.pts.flatMap((p) => p[1].map((q) => q[1]));
+  let y0 = Math.min(...vals), y1 = Math.max(...vals, c.target || 0);
+  const pad = (y1 - y0) * 0.08 || 1; y0 -= pad; y1 += pad;
+  const Y = (v) => T + ph - ((v - y0) / (y1 - y0)) * ph;
+  // подгруппы в момент перед событием — для цвета линий
+  const before = result.frames.filter((f) => f.t <= c.t_s - 0.05).pop() || result.frames[0];
+  const grp = Object.fromEntries(before.uavs.map((u) => [u[0], u[3]]));
+  // оси
+  g.strokeStyle = "#cbd5e1"; g.fillStyle = MUTED; g.font = "12px system-ui, sans-serif";
+  for (const t of [0, 0.5, 1, 1.5, 2]) {
+    g.beginPath(); g.moveTo(X(t), T); g.lineTo(X(t), T + ph); g.stroke();
+    g.fillText(fmt(t, 1), X(t) - 8, T + ph + 16);
+  }
+  g.fillStyle = INK;
+  g.fillText(join ? `секунды после появления борта ${c.kind.split(" ")[1]}` : "секунды после восстановления связи", L + pw / 2 - 110, H - 8);
+  g.save(); g.translate(16, T + ph / 2 + 50); g.rotate(-Math.PI / 2); g.fillText("сведений у борта", 0, 0); g.restore();
+  g.fillStyle = MUTED;
+  g.fillText(int(Math.round(y1 - pad)), L - 62, Y(y1 - pad) + 4);
+  g.fillText(int(Math.round(y0 + pad)), L - 62, Y(y0 + pad) + 4);
+  // требование 1,5 с
+  g.strokeStyle = RED; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(X(1.5), T); g.lineTo(X(1.5), T + ph); g.stroke(); g.setLineDash([]);
+  g.fillStyle = RED; g.fillText("требование ФТ № 1: 1,5 с", X(1.5) + 5, T + 12);
+  // накоплено к моменту события
+  if (c.target !== null) {
+    g.strokeStyle = INK; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(X(0), Y(c.target)); g.lineTo(X(x1), Y(c.target)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = INK; g.fillText(`накоплено группой к моменту события: ${int(c.target)}`, X(0.55), Y(c.target) - 6);
+  }
+  // момент события
+  g.strokeStyle = "#475569"; g.beginPath(); g.moveTo(X(0), T); g.lineTo(X(0), T + ph); g.stroke();
+  g.fillStyle = "#475569"; g.fillText(join ? "борт появился" : "связь восстановлена", X(0) + 5, T + 12);
+  // линии бортов
+  const ids = [...new Set(c.pts.flatMap((p) => p[1].map((q) => q[0])))].sort((a, b) => a - b);
+  for (const id of ids) {
+    const pts = c.pts.map((p) => [p[0], (p[1].find((q) => q[0] === id) || [])[1]]).filter((p) => p[1] !== undefined);
+    if (!pts.length) continue;
+    g.strokeStyle = id === who ? "#f59e0b" : GROUP[(grp[id] ?? 0) % GROUP.length];
+    g.lineWidth = id === who ? 3 : 1.6;
+    g.beginPath();
+    pts.forEach(([t, v], k) => { const x = X(t), y = Y(v); if (!k) g.moveTo(x, y); else { g.lineTo(x, Y(pts[k - 1][1])); g.lineTo(x, y); } });
+    g.stroke(); g.lineWidth = 1;
+    const [tl, vl] = pts[pts.length - 1];
+    g.fillStyle = g.strokeStyle; g.font = "11px system-ui, sans-serif";
+  }
+  // момент схождения
+  if (r && r.store_conv_s !== null) {
+    const x = X(r.store_conv_s), ok = r.store_conv_s <= 1.5;
+    g.strokeStyle = ok ? GREEN : RED; g.lineWidth = 2.5; g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke(); g.lineWidth = 1;
+    g.fillStyle = ok ? "#14532d" : "#7f1d1d"; g.font = "bold 13px system-ui, sans-serif";
+    g.fillText(`${join ? "борт получил всё" : "у всех бортов — всё накопленное"}: ${fmt(r.store_conv_s)} с ${ok ? "✓" : "✗"}`, x + 6, T + ph - 10);
+  }
+  // легенда
+  g.font = "12px system-ui, sans-serif";
+  const seen = new Set(), items = [];
+  for (const id of ids) {
+    const key = id === who ? "new" : grp[id] ?? 0;
+    if (seen.has(key)) continue; seen.add(key);
+    items.push([id === who ? `новый борт ${uid(id)}` : before.groups > 1 ? `подгруппа ${Number(key) + 1}` : "борта группы",
+      id === who ? "#f59e0b" : GROUP[Number(key) % GROUP.length]]);
+  }
+  let lx = W - R;  // легенда — справа сверху
+  for (const [label, col] of items.reverse()) {
+    lx -= g.measureText(label).width + 18;
+    g.fillStyle = col; g.fillRect(lx, 8, 14, 4); g.fillStyle = INK; g.fillText(label, lx + 18, 13);
+    lx -= 22;
   }
 }
 
@@ -687,25 +825,28 @@ function drawMap(i) {
 }
 
 // ------------------------------------------------------------------ воспроизведение
+let lastMapMs = 0;
+
 function showFrame(i, alpha = 0) {
   frameIdx = Math.max(0, Math.min(i, result.frames.length - 1));
   drawStory(frameIdx, alpha);
-  drawMap(frameIdx);
+  // карта второстепенна: при воспроизведении — не чаще 8 раз в секунду
+  const now = performance.now();
+  if (!playing || now - lastMapMs > 125 || frameIdx === result.frames.length - 1) { drawMap(frameIdx); lastMapMs = now; }
   $("time").value = frameIdx;
   $("tlabel").textContent = `${fmt(result.frames[frameIdx].t, 0)} с из ${Math.round(result.tmax)}`;
 }
 
-function speedAt(t) {
+const SPEEDS = [5, 10, 12, 15, 20, 30, 40, 50, 60, 80, 100];
+
+/** Скорость воспроизведения — постоянная на весь прогон; «авто»: весь полёт ≈ за 20 с. */
+function playSpeed() {
   const sel = Number($("speed").value);
   if (sel) return sel;
-  const auto = Math.max(5, result.tmax / 20);
-  // рядом с восстановлением связи и присоединением — замедление, чтобы было видно схождение картин
-  for (const e of result.events)
-    if (e.kind !== "fail" && t >= e.t - 1 && t <= e.t + (e.conv || 1) + 1) return 0.25;
-  for (const e of result.events)
-    if (e.kind !== "fail" && t >= e.t - 4 && t <= e.t + (e.conv || 1) + 4) return 2;
-  return auto;
+  return SPEEDS.find((v) => v >= result.tmax / 20) || SPEEDS[SPEEDS.length - 1];
 }
+
+function showSpeed() { $("speedval").textContent = result ? `×${playSpeed()}` : ""; }
 
 // кадр по модельному времени: индекс и доля пути до следующего кадра
 function frameAt(t) {
@@ -719,9 +860,11 @@ function frameAt(t) {
 
 function tick(ts) {
   if (!playing) return;
-  const dt = Math.min(0.1, (ts - lastTs) / 1000);
+  // время воспроизведения — по реальным часам; если кадр рисуется медленно, промежуточные
+  // кадры пропускаются, а не замедляется время
+  const dt = Math.max(0, (ts - lastTs) / 1000);
   lastTs = ts;
-  playT += dt * speedAt(playT);
+  playT += dt * playSpeed();
   if (playT >= result.tmax) { playT = result.tmax; showFrame(result.frames.length - 1); return stopPlay(); }
   showFrame(...frameAt(playT));
   requestAnimationFrame(tick);
@@ -814,6 +957,8 @@ async function main() {
   $("stop").onclick = stop;
   $("reset").onclick = () => choosePreset(preset);
   $("play").onclick = togglePlay;
+  $("speed").onchange = showSpeed;
+  document.addEventListener("visibilitychange", () => { lastTs = performance.now(); });
   $("time").oninput = (e) => { stopPlay(); showFrame(Number(e.target.value)); playT = result.frames[frameIdx].t; };
   $("dl_summary").onclick = () => download("summary.json", JSON.stringify(result.summary, null, 2), "application/json");
   $("dl_series").onclick = () => download("series.csv", seriesCsv(), "text/csv");

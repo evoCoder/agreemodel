@@ -66,3 +66,16 @@ def test_association_compare_matches_board_picture():
     # картина, пересчитанная стратегией борта по его хранилищу, совпадает с итогом прогона
     assert (used["objects"], used["duplicates"], used["mixed_objects"]) == (p["objects"], p["duplicates"], p["mixed_objects"])
     assert set(a["ai"]) == set(a["rules"]) and "errors" in a["ai"]
+
+
+def test_closeup_of_restore():
+    out = json.loads(sw.run_json(json.dumps(_short()), frame_s=5.0))
+    rs = out["summary"]["restores"]
+    cs = out["closeups"]
+    assert [c["t_s"] for c in cs] == [r["t_s"] for r in rs]
+    for c, r in zip(cs, rs):
+        ts = [p[0] for p in c["pts"]]
+        assert ts[0] <= 0 and ts[-1] >= 1.9 and c["target"] is not None
+        if r["store_conv_s"] is not None:  # в момент схождения у всех — не меньше накопленного к событию
+            at = next(p for p in c["pts"] if abs(p[0] - r["store_conv_s"]) < 1e-6)
+            assert min(v for _, v in at[1]) >= c["target"]
