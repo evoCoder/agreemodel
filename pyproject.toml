@@ -1,6 +1,6 @@
 [project]
 name = "agreemodel"
-version = "1.0.0"
+version = "1.1.0"
 description = "Симулятор технологии согласования информационной картины между БВС (ФТ № 1)"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]
