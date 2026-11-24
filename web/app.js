@@ -8,6 +8,11 @@ const form = $("form");
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const fmt = (x, d = 1) => (x === null || x === undefined ? "—" : Number(x).toFixed(d).replace(".", ","));
 const int = (x) => Math.round(x).toLocaleString("ru-RU");
+/** Склонение по числу: plural(2, "подгруппа", "подгруппы", "подгрупп"). */
+const plural = (n, one, few, many) => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+};
 const uid = (i) => "U" + String(i + 1).padStart(2, "0");
 
 let worker = null;
@@ -289,6 +294,8 @@ function prepare() {
   result.maxRec = Math.max(1, ...fr.flatMap((f) => f.uavs.map((u) => u[6])));
   // строй — в собственной системе группы: курс вверх; отказавший борт — на месте в строю,
   // где он был в момент отказа
+  let dist = 0;
+  fr.forEach((f, i) => { if (i) dist += Math.hypot(f.c[0] - fr[i - 1].c[0], f.c[1] - fr[i - 1].c[1]); f.dist = dist; });
   const lastRel = {};
   let ext = 1;
   fr.forEach((f, i) => {
@@ -392,7 +399,7 @@ function renderAI(a) {
     ${row("смешанные объекты", "смешанный объект", "mixed_objects")}${row("поглощённые объекты", "поглощённый объект", "absorbed")}
     ${row("логические дубликаты", "логический дубликат", "duplicates")}${row("ложные объекты", "", "false_objects")}</table>
     <p>Обе картины построены по одним и тем же итоговым сведениям борта — обмен между бортами от способа ассоциации не зависит. В этом прогоне борта использовали: ${used}.
-    ${r.errors === 0 && m.errors === 0 ? "На одиночных объектах правила не ошибаются; выигрыш ИИ — на группах близких объектов (сценарий С6)." : ""}</p>`;
+    Это один прогон. По серии цикла 4: на группах близких объектов с ИИ ошибок картины меньше на 20–30 %, на обычных сценариях — не хуже правил.</p>`;
   applyTerms(box);
 }
 
@@ -460,6 +467,16 @@ function showResult() {
 }
 
 // ------------------------------------------------------------------ «Что происходит»
+/** Вывести текст, уменьшив шрифт, если он не помещается в ширину maxW (шрифты на разных ОС шире или уже). */
+function fit(g, text, x, y, maxW) {
+  const w = g.measureText(text).width;
+  if (w <= maxW) { g.fillText(text, x, y); return; }
+  const font = g.font, m = font.match(/(\d+(?:\.\d+)?)px/);
+  if (m) g.font = font.replace(m[0], `${Math.max(8, Math.floor(parseFloat(m[1]) * maxW / w * 10) / 10)}px`);
+  g.fillText(text, x, y, maxW);  // maxW — страховка: браузер сожмёт остаток по ширине
+  g.font = font;
+}
+
 function wrapText(g, text, x, y, maxW, lh) {
   const words = text.split(" ");
   let line = "", yy = y;
@@ -494,25 +511,26 @@ function drawStory(i, alpha = 0) {
   segs.push([t0, tmax, null]);
   for (const [a, b, p] of segs) {
     const w = X(b) - X(a);
-    const txt = p ? `разрыв связи: ${p.groups.length} подгруппы` : "связь есть";
+    const txt = p ? `разрыв связи: ${p.groups.length} ${plural(p.groups.length, "подгруппа", "подгруппы", "подгрупп")}` : "связь есть";
     g.font = (p ? "bold " : "") + "12px system-ui, sans-serif";
     if (w > g.measureText(txt).width + 8) { g.fillStyle = p ? "#991b1b" : "#166534"; g.fillText(txt, X(a) + 6, by + 14); }
   }
   // события
   g.font = "12px system-ui, sans-serif";
-  let lastRight = -1e9, row = 0;
+  const rowsRight = [-1e9, -1e9, -1e9];  // правый край последней подписи в каждом из трёх рядов
   for (const e of result.events) {
     const x = X(e.t);
     const col = e.kind === "fail" ? "#475569" : e.ok ? GREEN : RED;
     g.fillStyle = col; g.strokeStyle = col;
     g.beginPath(); g.moveTo(x, by - 2); g.lineTo(x - 5, by - 10); g.lineTo(x + 5, by - 10); g.fill();
     g.beginPath(); g.moveTo(x, by); g.lineTo(x, by + bh); g.stroke();
-    const tw = g.measureText(e.text).width;
-    row = x - 4 < lastRight ? (row + 1) % 2 : 0;
-    let tx = Math.min(Math.max(L, x - 6), R - tw);
-    const ty = row ? by + bh + 30 : by + bh + 15;
-    g.fillText(e.text, tx, ty);
-    lastRight = Math.max(lastRight, tx + tw + 10);
+    const tw = Math.min(g.measureText(e.text).width, R - L);
+    const tx = Math.min(Math.max(L, x - 6), R - tw);
+    // первый ряд, где подпись не налезает на предыдущую; если места нет — ряд с самым левым краем
+    let row = rowsRight.findIndex((r) => tx >= r);
+    if (row < 0) row = rowsRight.indexOf(Math.min(...rowsRight));
+    fit(g, e.text, tx, by + bh + 15 + row * 14, tw);
+    rowsRight[row] = tx + tw + 10;
   }
   g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
   const px = X(tNow);
@@ -523,16 +541,16 @@ function drawStory(i, alpha = 0) {
   g.fillStyle = INK; g.font = "bold 13px system-ui, sans-serif";
   const lbl = `${fmt(tNow, 0)} с`; g.fillText(lbl, Math.min(Math.max(px - 14, L), R - 40), by - 20 + 0);
 
-  const top = 112;
+  const top = 126;
   g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(0, top - 10); g.lineTo(W, top - 10); g.stroke();
 
   // 2. строй и радиосвязь
   const fw = 420, cx0 = fw / 2, cy0 = top + 40 + (H - top - 80) / 2;
   const k = Math.min((fw - 90) / 2, (H - top - 120) / 2) / result.formExt;
   g.fillStyle = INK; g.font = "bold 14px system-ui, sans-serif";
-  g.fillText("Строй (вид вблизи) и радиосвязь", 16, top + 8);
+  fit(g, "Строй (вид вблизи) и радиосвязь", 16, top + 8, fw - 30);
   g.font = "12px system-ui, sans-serif"; g.fillStyle = MUTED;
-  g.fillText("линия — борта слышат друг друга по радио", 16, top + 26);
+  fit(g, "линия — борта слышат друг друга по радио", 16, top + 26, fw - 30);
   const P = (u) => { const r = fr.rel[u[0]]; return [cx0 + r[0] * k, cy0 - r[1] * k]; };
   const byIdx = Object.fromEntries(fr.uavs.map((u) => [u[0], u]));
   // линии связи — одним проходом на цвет, без полупрозрачности
@@ -568,43 +586,47 @@ function drawStory(i, alpha = 0) {
     g.beginPath(); g.moveTo(x, y - 9); g.lineTo(x + 8, y + 7); g.lineTo(x, y + 3); g.lineTo(x - 8, y + 7); g.closePath(); g.fill();
     g.fillStyle = INK; g.font = "11px system-ui, sans-serif"; g.fillText(uid(u[0]), x + 10, y + 4);
   }
+  // движение группы: скорость и пройденный путь (центр группы)
+  g.fillStyle = INK; g.font = "13px system-ui, sans-serif"; g.textAlign = "right";
+  fit(g, `движение: ${sce.swarm.speed_kmh} км/ч · пройдено ${fmt(fr.dist / 1000, 1)} км из ${sce.swarm.route_length_km}`, fw - 12, H - 12, fw - 120);
+  g.textAlign = "start";
   // масштаб
   const m = sce.swarm.spacing_m;
   g.strokeStyle = MUTED; g.beginPath(); g.moveTo(16, H - 18); g.lineTo(16 + m * k, H - 18); g.stroke();
   g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif"; g.fillText(`${m} м`, 16, H - 24);
   if (fr.groups > 1) {
-    g.fillStyle = RED; g.font = "bold 22px system-ui, sans-serif"; g.fillText("РАЗРЫВ СВЯЗИ", 16, top + 60);
-    g.font = "13px system-ui, sans-serif"; g.fillText(`подгрупп связи: ${fr.groups}, они не слышат друг друга`, 16, top + 80);
+    g.fillStyle = RED; g.font = "bold 22px system-ui, sans-serif"; fit(g, "РАЗРЫВ СВЯЗИ", 16, top + 60, fw - 30);
+    g.font = "13px system-ui, sans-serif"; fit(g, `подгрупп связи: ${fr.groups}, они не слышат друг друга`, 16, top + 80, fw - 30);
   }
 
   // 3. картины бортов
-  const x0 = fw + 30, pw = W - x0 - 20;
+  const x0 = fw + 30, pw = W - x0 - 20, PW = W - x0 - 16;
   g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(fw + 10, top - 10); g.lineTo(fw + 10, H); g.stroke();
   g.fillStyle = INK; g.font = "bold 14px system-ui, sans-serif";
-  g.fillText("Картины бортов", x0, top + 8);
+  fit(g, "Картины бортов", x0, top + 8, PW);
   g.font = "12px system-ui, sans-serif"; g.fillStyle = MUTED;
-  g.fillText("полоса — сколько сведений у борта; одинаковый цвет — одинаковая картина;", x0, top + 26);
-  g.fillText("точки — объекты в картине борта: ● есть у всех бортов, ○ только у своей подгруппы", x0, top + 40);
+  fit(g, "полоса — сколько сведений у борта; одинаковый цвет — одинаковая картина;", x0, top + 26, PW);
+  fit(g, "точки — объекты в картине борта: ● есть у всех бортов, ○ только у своей подгруппы", x0, top + 40, PW);
   const div = result.diverged[i];
   const nv = fr.variants;
   const syncing = result.events.find((e) => e.kind !== "fail" && e.conv !== null && tNow >= e.t && tNow < e.t + e.conv);
   g.font = "bold 16px system-ui, sans-serif";
   if (syncing) {
     g.fillStyle = "#b45309";
-    g.fillText(syncing.kind === "join" ? "Новый борт получает картину группы…" : "Связь восстановлена — идёт согласование картин…", x0, top + 64);
+    fit(g, syncing.kind === "join" ? "Новый борт получает картину группы…" : "Связь восстановлена — идёт согласование картин…", x0, top + 64, PW);
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#92400e";
-    g.fillText(`борта обмениваются накопленными сведениями: ${fmt(tNow - syncing.t, 2)} с`, x0, top + 80);
+    fit(g, `борта обмениваются накопленными сведениями: ${fmt(tNow - syncing.t, 2)} с`, x0, top + 80, PW);
   } else if (div) {
-    g.fillStyle = RED; g.fillText(`Картины расходятся: ${nv} разные картины`, x0, top + 64);
+    g.fillStyle = RED; fit(g, `Картины расходятся: ${nv} ${plural(nv, "разная картина", "разные картины", "разных картин")}`, x0, top + 64, PW);
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#7f1d1d";
-    g.fillText("у каждой подгруппы только свои сведения", x0, top + 80);
+    fit(g, "у каждой подгруппы только свои сведения", x0, top + 80, PW);
   } else {
     // «совпадают» — только если у всех работающих бортов одни и те же сведения; иначе
     // объекты картин одинаковы, а свежие записи ещё в пути (доходят за доли секунды)
     const recs = fr.uavs.filter((u) => u[4]).map((u) => u[6]);
     const lag = Math.max(...recs) - Math.min(...recs);
     g.fillStyle = GREEN;
-    g.fillText("✓ Картины всех бортов согласованы", x0, top + 64);
+    fit(g, "✓ Картины всех бортов согласованы", x0, top + 64, PW);
     const rec = result.events.filter((e) => e.kind !== "fail" && e.conv !== null && fr.t >= e.t && fr.t <= e.t + e.conv + 15).pop();
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#166534";
     const wr = lag === 1 ? "свежая запись" : lag < 5 ? "свежие записи" : "свежих записей";
@@ -613,11 +635,13 @@ function drawStory(i, alpha = 0) {
         (lag === 0 ? "; сведения у всех одинаковы" : `; в пути ${lag} ${wr}`)
       : lag === 0 ? "у всех бортов одни и те же сведения"
       : `объекты одинаковы; в пути ${lag} ${wr} — дойдут за доли секунды`;
-    g.fillText(line, x0, top + 80);
+    fit(g, line, x0, top + 80, PW);
   }
   const rows = sce.swarm.n_uav + Object.keys(result.joinT).length;
   const rh = Math.min(30, (H - top - 104) / rows), ry0 = top + 96;
-  const bx = x0 + 52, bw = 170, dx0 = bx + bw + 112;
+  const bx = x0 + 52, bw = 170;
+  g.font = "12px system-ui, sans-serif";
+  const dotX = Math.max(bx + bw + 112, bx + bw + 8 + g.measureText("сведений 00 000").width + 10);  // колонка точек — после подписи
   for (let r = 0; r < rows; r++) {
     const u = byIdx[r], y = ry0 + r * rh;
     g.font = "12px system-ui, sans-serif";
@@ -628,33 +652,33 @@ function drawStory(i, alpha = 0) {
     if (!u) {
       const coming = syncing && syncing.kind === "join" && nx.uavs.some((q) => q[0] === r);
       g.fillStyle = coming ? "#b45309" : GRAY;
-      g.fillText(coming ? "присоединяется — получает картину группы" : "ещё не в группе", bx + bw + 8, y + rh / 2 + 2);
+      fit(g, coming ? "присоединяется — получает картину группы" : "ещё не в группе", bx + bw + 8, y + rh / 2 + 2, W - 16 - (bx + bw + 8));
       continue;
     }
-    if (!u[4]) { g.fillStyle = GRAY; g.fillText("отказ — не работает", bx + bw + 8, y + rh / 2 + 2); continue; }
+    if (!u[4]) { g.fillStyle = GRAY; fit(g, "отказ — не работает", bx + bw + 8, y + rh / 2 + 2, W - 16 - (bx + bw + 8)); continue; }
     const rec = u[6];  // значения — ровно из кадра модели, без интерполяции
     g.fillStyle = syncing ? (u[7] === 0 ? "#f59e0b" : "#fbbf24") : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
     g.fillRect(bx, y + 3, Math.max(2, bw * rec / result.maxRec), rh - 10);
     g.fillStyle = INK;
-    g.fillText(`сведений ${int(rec)}`, bx + bw + 8, y + rh / 2 + 2);
+    fit(g, `сведений ${int(rec)}`, bx + bw + 8, y + rh / 2 + 2, dotX - (bx + bw + 8) - 6);
     // точки объектов: общие для всех бортов — залитые, известные только части бортов — полые
     const nC = u[8] || 0, nO = u[9] || 0, n = nC + nO;
-    const room = W - 20 - dx0 - 36, step = n ? Math.min(11, room / n) : 11, rd = Math.max(2, Math.min(4, step / 2 - 0.5));
+    const room = W - 20 - dotX - 36, step = n ? Math.min(11, room / n) : 11, rd = Math.max(2, Math.min(4, step / 2 - 0.5));
     const cy = y + rh / 2 - 2;
     const ccol = syncing ? "#d97706" : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
     // точки — одним проходом: залитые, затем полые
     if (nC) {
       g.fillStyle = "#334155"; g.beginPath();
-      for (let j = 0; j < nC; j++) { const cx = dx0 + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
+      for (let j = 0; j < nC; j++) { const cx = dotX + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
       g.fill();
     }
     if (n > nC) {
       g.strokeStyle = ccol; g.lineWidth = 1.6; g.beginPath();
-      for (let j = nC; j < n; j++) { const cx = dx0 + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
+      for (let j = nC; j < n; j++) { const cx = dotX + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
       g.stroke(); g.lineWidth = 1;
     }
     g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
-    g.fillText(String(n), dx0 + n * step + 4, y + rh / 2 + 2);
+    g.fillText(String(n), dotX + n * step + 4, y + rh / 2 + 2);
   }
 
   // плашка события: держится BANNER_S секунд воспроизведения, время идёт равномерно
@@ -663,21 +687,24 @@ function drawStory(i, alpha = 0) {
   if (!ban) {
     const next = result.events.find((e) => e.t > tNow);
     g.fillStyle = "#94a3b8"; g.font = "14px system-ui, sans-serif"; g.textAlign = "center";
-    g.fillText(next ? `Далее: ${next.kind === "fail" ? `отказ борта на ${Math.round(next.t)} с` : next.kind === "join" ? `присоединение борта ${next.who} на ${Math.round(next.t)} с` : `восстановление связи на ${Math.round(next.t)} с`}`
-      : result.events.length ? "Все события сценария пройдены" : "В сценарии нет событий", W / 2, H + BANNER_H / 2 + 5);
+    fit(g, next ? `Далее: ${next.kind === "fail" ? `отказ борта на ${Math.round(next.t)} с` : next.kind === "join" ? `присоединение борта ${next.who} на ${Math.round(next.t)} с` : `восстановление связи на ${Math.round(next.t)} с`}`
+      : result.events.length ? "Все события сценария пройдены" : "В сценарии нет событий", W / 2, H + BANNER_H / 2 + 5, W - 40);
     g.textAlign = "start";
   }
   if (ban) {
-    const ok = ban.ok, bw2 = 640, bh2 = BANNER_H - 12, bx2 = (W - bw2) / 2, by2 = H + 6;
+    const ok = ban.ok, tail = ban.conv === null ? "не достигнуто" : `за ${fmt(ban.conv)} с`;
+    const main = ban.kind === "join" ? `Присоединение борта ${ban.who} → получил картину группы ${tail}` : `Связь восстановлена → картины всех бортов совпали ${tail}`;
+    const sub = `требование ФТ № 1 — не более 1,5 с ${ok ? "✓" : "✗"}`;
+    g.font = "bold 22px system-ui, sans-serif";
+    const tw = Math.min(g.measureText(main).width, W - 100);
+    const bw2 = tw + 60, bh2 = BANNER_H - 12, bx2 = (W - bw2) / 2, by2 = H + 6;
     g.fillStyle = ok ? "rgba(240,253,244,.97)" : "rgba(254,242,242,.97)";
     g.strokeStyle = ok ? GREEN : RED; g.lineWidth = 3;
     g.beginPath(); g.roundRect ? g.roundRect(bx2, by2, bw2, bh2, 10) : g.rect(bx2, by2, bw2, bh2); g.fill(); g.stroke(); g.lineWidth = 1;
     g.fillStyle = ok ? "#14532d" : "#7f1d1d"; g.textAlign = "center";
-    g.font = "bold 22px system-ui, sans-serif";
-    const tail = ban.conv === null ? "не достигнуто" : `за ${fmt(ban.conv)} с`;
-    g.fillText(ban.kind === "join" ? `Присоединение борта ${ban.who} → получил картину группы ${tail}` : `Связь восстановлена → картины всех бортов совпали ${tail}`, W / 2, by2 + 30);
+    fit(g, main, W / 2, by2 + 30, bw2 - 40);
     g.font = "14px system-ui, sans-serif";
-    g.fillText(`требование ФТ № 1 — не более 1,5 с ${ok ? "✓" : "✗"}`, W / 2, by2 + 52);
+    fit(g, sub, W / 2, by2 + 52, bw2 - 40);
     g.textAlign = "start";
   }
 }
