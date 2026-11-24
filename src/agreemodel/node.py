@@ -566,8 +566,14 @@ class Node:
             cur = self.store.version_vector().get(part.origin, 0)
             if part.from_excl > cur:
                 pk = self.parked.setdefault(part.origin, {})
-                if len(pk) < self.cfg.park_parts:
-                    pk[part.from_excl] = part  # после пропуска — отложить до его заполнения
+                prev_p = pk.get(part.from_excl)
+                # после пропуска — отложить до его заполнения; пустая замыкающая часть
+                # (b, b] или более короткая часть с тем же началом не вытесняет уже
+                # отложенную (иначе отложенные данные терялись и дозапрашивались заново)
+                if part.to_incl > part.from_excl and (
+                        prev_p is None or part.to_incl > prev_p.to_incl) and (
+                        prev_p is not None or len(pk) < self.cfg.park_parts):
+                    pk[part.from_excl] = part
                 # пропуск обнаружен сразу (доставка от одного борта — по порядку):
                 # дозапросить у отправителя только его, не дожидаясь срока ожидания
                 gap_end = min(pk) if pk else part.from_excl

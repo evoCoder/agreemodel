@@ -317,3 +317,19 @@ def test_join_restore_counts_from_appearance_of_joining_uav():
 def test_fix_latency_within_publish_period():
     s = run(_short(1)).summary
     assert s["fix_latency_s"]["max"] <= NodeCfg().publish_period_s + 1e-9
+
+
+def test_empty_end_marker_does_not_displace_parked_part():
+    from agreemodel.store import Delta, DeltaPart
+    a, r = _node(0, "U01"), _node(1, "U02")
+    _writes(a, 40)
+    parts = a.store.parts_for("U01", 0, None, 480)
+    r.peer_vv = {0: (1.0, {"U01": 40})}
+    r.uid_of = {0: "U01"}
+    for p in parts[1:]:  # первая часть потеряна
+        r.on_delta_c1(1.0, 0, Delta((p,)))
+    k = parts[1].from_excl
+    # замыкающая пустая часть другого ответа с тем же началом
+    r.on_delta_c1(1.01, 0, Delta((DeltaPart("U01", k, k, ()),)))
+    r.on_delta_c1(1.1, 0, Delta((parts[0],)))
+    assert r.store.version_vector()["U01"] == 40  # отложенное применилось целиком
