@@ -75,7 +75,7 @@ python -m http.server 8765 -d dist/web       # открыть http://127.0.0.1:8
 ### Переносимая версия для Windows, история, видео
 
 ```bash
-python tools/build_win.py          # → dist/soglasie-v<версия>-win64.zip (+ .sha256)
+python tools/build_win.py          # → dist/soglasie-v<версия>-<коммит>-win64.zip (+ .sha256)
 python tools/export_history.py     # → dist/history: история коммитов, копия репозитория, журнал циклов
 node tools/record_video.mjs        # запись показа браузером без интерфейса (нужен playwright-core)
 ```

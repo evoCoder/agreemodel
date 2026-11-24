@@ -1,7 +1,7 @@
 // Интерфейс симулятора «Согласие»: исходные данные → расчёт в фоновом потоке →
 // результат (карточки), анимация «Что происходит», карта маршрута, показатели, детали для специалистов.
-import { PRESETS } from "./presets.js";
-import { applyTerms } from "./terms.js";
+import { PRESETS } from "./presets.js?v=dev";
+import { applyTerms } from "./terms.js?v=dev";
 
 const $ = (id) => document.getElementById(id);
 const form = $("form");
@@ -41,7 +41,7 @@ const GREEN = "#16a34a", RED = "#dc2626", GRAY = "#94a3b8", INK = "#0f172a", MUT
 
 // ------------------------------------------------------------------ среда расчёта
 function startWorker() {
-  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  worker = new Worker(new URL("./worker.js?v=dev", import.meta.url), { type: "module" });
   worker.onmessage = onWorker;
   worker.postMessage({ type: "init" });
 }
