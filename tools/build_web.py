@@ -22,7 +22,7 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         "commit": git("rev-parse", "--short", "HEAD") or "?",
         "commit_date": git("log", "-1", "--format=%cd", "--date=iso-strict"),
         "dirty": bool(git("status", "--porcelain", "--", "src", "web", "scenarios")),
-        "built": datetime.now(timezone.utc).astimezone().strftime("%d.%m.%Y %H:%M"),
+        "built": datetime.now(timezone(timedelta(hours=3))).strftime("%d.%m.%Y %H:%M МСК"),
         "pyodide": spec["pyodide"],
     }
     (out / "version.json").write_text(json.dumps(version, ensure_ascii=False, indent=2), encoding="utf-8")
