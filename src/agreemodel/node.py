@@ -586,7 +586,7 @@ class Node:
                 # данные по источнику идут — ответ в пути, срок ожидания продлевается
                 rq.deadline = max(rq.deadline, t_s + self.cfg.nack_timeout_s)
             pk = self.parked.get(part.origin)
-            if k and pk:
+            if k and pk and self.cfg.nack_next_gap:
                 # пропуск заполнен, но за ним есть следующий (отложенные части дальше):
                 # дозапросить его сразу, а не ждать новой части или срока ожидания
                 cur = self.store.version_vector().get(part.origin, 0)
@@ -618,9 +618,10 @@ class Node:
         for origin in list(req):
             d, upto = req[origin]
             have = mine.get(origin, 0)
-            p = self.req.get(origin)
-            target = upto if upto else (p.want_to if p is not None else 0)
-            if target and have >= target:
+            # без верхней границы — до наибольшей версии, известной у соседей
+            target = upto if upto else max(
+                (vv.get(origin, 0) for _, vv in self.peer_vv.values()), default=0)
+            if have >= target:
                 del req[origin]
             elif have > d:
                 req[origin] = (have, upto)
