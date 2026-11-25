@@ -43,7 +43,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return TYPES.get(Path(str(path)).suffix.lower(), "application/octet-stream")
 
     def end_headers(self):
-        self.send_header("Cache-Control", "no-cache")
+        # no-store: после обновления архива браузер не покажет старую страницу из кэша
+        self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         super().end_headers()
 

@@ -1,5 +1,5 @@
 // Расчёт модели в фоновом потоке браузера: Pyodide + numpy (локальные файлы) + пакет agreemodel.
-import { loadPyodide } from "./pyodide/pyodide.mjs";
+import { loadPyodide } from "./pyodide/pyodide.mjs?v=dev";
 
 let py = null;
 
@@ -7,7 +7,7 @@ async function init() {
   const t0 = performance.now();
   py = await loadPyodide({ indexURL: new URL("./pyodide/", import.meta.url).href });
   await py.loadPackage("numpy", { messageCallback: () => {} });
-  const zip = await (await fetch(new URL("./py/app.zip", import.meta.url))).arrayBuffer();
+  const zip = await (await fetch(new URL("./py/app.zip?v=dev", import.meta.url))).arrayBuffer();
   py.unpackArchive(zip, "zip", { extractDir: "/app" });
   py.runPython(`
 import sys, json

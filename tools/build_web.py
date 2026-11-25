@@ -22,7 +22,7 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Среда исполнения (Pyodide, numpy):")
     spec = fetch_vendor(out / "pyodide")
-    for name in ("index.html", "app.js", "worker.js", "presets.js", "terms.js", "style.css"):
+    for name in ("presets.js", "terms.js", "style.css"):
         shutil.copy2(WEB / name, out / name)
     (out / "py").mkdir()
     app_zip(out / "py" / "app.zip")
@@ -104,10 +104,18 @@ def main(argv: list[str] | None = None) -> int:
         "commit": git("rev-parse", "--short", "HEAD") or "?",
         "commit_date": git("log", "-1", "--format=%cd", "--date=iso-strict"),
         "dirty": bool(git("status", "--porcelain", "--", "src", "web", "scenarios")),
-        "built": datetime.now(timezone.utc).astimezone().strftime("%d.%m.%Y %H:%M"),
+        "built": datetime.now(timezone(timedelta(hours=3))).strftime("%d.%m.%Y %H:%M МСК"),
         "pyodide": spec["pyodide"],
     }
     (out / "version.json").write_text(json.dumps(version, ensure_ascii=False, indent=2), encoding="utf-8")
+    # версия в адресах файлов («?v=<коммит>»): браузер не возьмёт из кэша файлы прошлой сборки,
+    # даже где заголовки кэширования задать нельзя (GitHub Pages)
+    tag = version["commit"] + ("-dirty" if version["dirty"] else "")
+    for name in ("index.html", "app.js", "worker.js"):
+        text = (WEB / name).read_text(encoding="utf-8")
+        if "?v=dev" not in text:
+            raise SystemExit(f"{name}: нет меток ?v=dev")
+        (out / name).write_text(text.replace("?v=dev", f"?v={tag}"), encoding="utf-8")
 
     files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
     (out / "SHA256SUMS").write_text(

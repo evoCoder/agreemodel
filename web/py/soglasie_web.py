@@ -102,6 +102,37 @@ def frame(sim: Simulation, t: float, alive: list[int], view: int) -> dict[str, A
             "groups": len(comps), "variants": len(variants), "truth": truth, "pic": objs, "view": v}
 
 
+CLOSEUP_S = (-0.3, 2.0)  # окно «крупного плана» вокруг восстановления связи и присоединения, с
+
+
+class WebSimulation(Simulation):
+    """Прогон с записью «крупного плана» восстановления согласованности.
+
+    Ядро проверяет восстановление на каждом шаге модели (``_restore_check``, шаг 0,1 с);
+    здесь после этой проверки только читается число сведений у каждого борта в окне
+    ``CLOSEUP_S`` вокруг события. Состояние модели не меняется.
+    """
+
+    def __init__(self, sc: Scenario, on_sample=None) -> None:
+        super().__init__(sc, on_sample=on_sample)
+        self.closeups = [{"t_s": r.t_s, "kind": r.kind, "uav": r.uav, "target": None, "pts": []}
+                         for r in self.restores]
+
+    def _restore_check(self, t: float) -> None:
+        super()._restore_check(t)
+        try:
+            lo, hi = CLOSEUP_S
+            for r, c in zip(self.restores, self.closeups):
+                if r.t_s + lo - 1e-9 <= t <= r.t_s + hi + 1e-9:
+                    alive = self.alive()
+                    if c["target"] is None and r.target is not None:
+                        c["target"] = sum(r.target.values())
+                    c["pts"].append([round(t - r.t_s, 2),
+                                     [[i, sum(self.nodes[i].store.version_vector().values())] for i in alive]])
+        except Exception:  # крупный план — только для показа
+            pass
+
+
 class FrameRecorder:
     """Обработчик ``on_sample``: ход выполнения и кадры."""
 
@@ -176,7 +207,7 @@ def run_json(raw_json: str, post: Post | None = None, frame_s: float = 0.5,
     sc = scenario_from(raw)
     w0 = time.perf_counter()
     rec = FrameRecorder(sc, post, frame_s, view_uav)
-    sim = Simulation(sc, on_sample=rec)
+    sim = WebSimulation(sc, on_sample=rec)
     res = sim.run(progress=False)
     summary = res.summary
     try:
@@ -186,4 +217,5 @@ def run_json(raw_json: str, post: Post | None = None, frame_s: float = 0.5,
     summary["wall_s"] = round(time.perf_counter() - w0, 1)
     summary["version"] = __version__
     return json.dumps({"summary": summary, "series": res.series, "frames": rec.frames,
-                       "scenario": to_dict(sc), "association": assoc}, ensure_ascii=False)
+                       "scenario": to_dict(sc), "association": assoc,
+                       "closeups": sim.closeups}, ensure_ascii=False)

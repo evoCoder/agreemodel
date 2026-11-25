@@ -1,4 +1,4 @@
-"""Сборка переносимой версии для Windows: dist/soglasie-v<версия>-win64.zip.
+"""Сборка переносимой версии для Windows: dist/soglasie-v<версия>-<коммит>-win64.zip.
 
     python tools/build_win.py               # страница + Python для Windows + выгрузка истории
     python tools/build_win.py --no-history
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
 
     build_web.main(["--out", str(stage_root / "_web")])
     ver = json.loads((stage_root / "_web" / "version.json").read_text(encoding="utf-8"))
-    name = f"soglasie-v{ver['version']}-win64"
+    name = f"soglasie-v{ver['version']}-{ver['commit']}{'-dirty' if ver['dirty'] else ''}-win64"
     stage = stage_root / name
     stage.mkdir(parents=True)
     (stage_root / "_web").rename(stage / "web")

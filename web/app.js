@@ -1,13 +1,18 @@
 // Интерфейс симулятора «Согласие»: исходные данные → расчёт в фоновом потоке →
 // результат (карточки), анимация «Что происходит», карта маршрута, показатели, детали для специалистов.
-import { PRESETS } from "./presets.js";
-import { applyTerms } from "./terms.js";
+import { PRESETS } from "./presets.js?v=dev";
+import { applyTerms } from "./terms.js?v=dev";
 
 const $ = (id) => document.getElementById(id);
 const form = $("form");
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const fmt = (x, d = 1) => (x === null || x === undefined ? "—" : Number(x).toFixed(d).replace(".", ","));
 const int = (x) => Math.round(x).toLocaleString("ru-RU");
+/** Склонение по числу: plural(2, "подгруппа", "подгруппы", "подгрупп"). */
+const plural = (n, one, few, many) => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+};
 const uid = (i) => "U" + String(i + 1).padStart(2, "0");
 
 let worker = null;
@@ -28,12 +33,15 @@ const SPLITS = {
   "2+2+4": [[0, 1], [2, 3], [4, 5, 6, 7]],
 };
 const GROUP = ["#2563eb", "#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d", "#0891b2", "#a16207"];
+const EDGE = ["#93c5fd", "#fdba74", "#c4b5fd", "#5eead4", "#f9a8d4", "#bef264", "#67e8f9", "#fcd34d"];  // светлые варианты GROUP
 const VARIANT = ["#2563eb", "#ea580c", "#7c3aed", "#0d9488", "#db2777", "#65a30d"];
+const BANNER_H = 76;   // полоса плашек событий внизу «Что происходит»
+const BANNER_S = 4.5;  // сколько секунд воспроизведения держится плашка события
 const GREEN = "#16a34a", RED = "#dc2626", GRAY = "#94a3b8", INK = "#0f172a", MUTED = "#475569";
 
 // ------------------------------------------------------------------ среда расчёта
 function startWorker() {
-  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  worker = new Worker(new URL("./worker.js?v=dev", import.meta.url), { type: "module" });
   worker.onmessage = onWorker;
   worker.postMessage({ type: "init" });
 }
@@ -286,6 +294,8 @@ function prepare() {
   result.maxRec = Math.max(1, ...fr.flatMap((f) => f.uavs.map((u) => u[6])));
   // строй — в собственной системе группы: курс вверх; отказавший борт — на месте в строю,
   // где он был в момент отказа
+  let dist = 0;
+  fr.forEach((f, i) => { if (i) dist += Math.hypot(f.c[0] - fr[i - 1].c[0], f.c[1] - fr[i - 1].c[1]); f.dist = dist; });
   const lastRel = {};
   let ext = 1;
   fr.forEach((f, i) => {
@@ -316,7 +326,7 @@ function prepare() {
       evs.push({ t: r.t_s, kind: "restore", ok: okr, conv: r.store_conv_s,
         text: `связь восстановлена → согласованность восстановлена ${r.store_conv_s === null ? "— не достигнута" : "за " + fmt(r.store_conv_s) + " с"}` });
     else if (r.kind.startsWith("join"))
-      evs.push({ t: r.t_s, kind: "join", ok: okr, conv: r.store_conv_s,
+      evs.push({ t: r.t_s, kind: "join", ok: okr, conv: r.store_conv_s, who: r.kind.split(" ")[1] || "",
         text: `присоединение борта ${r.kind.split(" ")[1] || ""} → получил картину ${r.store_conv_s === null ? "— не получил" : "за " + fmt(r.store_conv_s) + " с"}` });
   }
   evs.sort((a, b) => a.t - b.t);
@@ -389,7 +399,7 @@ function renderAI(a) {
     ${row("смешанные объекты", "смешанный объект", "mixed_objects")}${row("поглощённые объекты", "поглощённый объект", "absorbed")}
     ${row("логические дубликаты", "логический дубликат", "duplicates")}${row("ложные объекты", "", "false_objects")}</table>
     <p>Обе картины построены по одним и тем же итоговым сведениям борта — обмен между бортами от способа ассоциации не зависит. В этом прогоне борта использовали: ${used}.
-    ${r.errors === 0 && m.errors === 0 ? "На одиночных объектах правила не ошибаются; выигрыш ИИ — на группах близких объектов (сценарий С6)." : ""}</p>`;
+    Это один прогон. По серии цикла 4: на группах близких объектов с ИИ ошибок картины меньше на 20–30 %, на обычных сценариях — не хуже правил.</p>`;
   applyTerms(box);
 }
 
@@ -449,12 +459,24 @@ function showResult() {
   const t = $("time");
   t.max = result.frames.length - 1; t.disabled = false;
   drawChart();
+  showSpeed();
+  buildCloseup();
   playT = 0;
   showFrame(0);
   startPlay();  // воспроизведение запускается само
 }
 
 // ------------------------------------------------------------------ «Что происходит»
+/** Вывести текст, уменьшив шрифт, если он не помещается в ширину maxW (шрифты на разных ОС шире или уже). */
+function fit(g, text, x, y, maxW) {
+  const w = g.measureText(text).width;
+  if (w <= maxW) { g.fillText(text, x, y); return; }
+  const font = g.font, m = font.match(/(\d+(?:\.\d+)?)px/);
+  if (m) g.font = font.replace(m[0], `${Math.max(8, Math.floor(parseFloat(m[1]) * maxW / w * 10) / 10)}px`);
+  g.fillText(text, x, y, maxW);  // maxW — страховка: браузер сожмёт остаток по ширине
+  g.font = font;
+}
+
 function wrapText(g, text, x, y, maxW, lh) {
   const words = text.split(" ");
   let line = "", yy = y;
@@ -471,9 +493,9 @@ function drawStory(i, alpha = 0) {
   const fr = result.frames[i], sce = result.scenario;
   const nx = result.frames[Math.min(i + 1, result.frames.length - 1)];
   const tNow = fr.t + alpha * (nx.t - fr.t);
-  const cv = $("story"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
-  g.clearRect(0, 0, W, H);
-  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+  const cv = $("story"), g = cv.getContext("2d"), W = cv.width, HF = cv.height, H = HF - BANNER_H;
+  g.clearRect(0, 0, W, HF);
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, HF);
 
   // 1. полоса времени
   const L = 24, R = W - 24, by = 44, bh = 20, tmax = result.tmax;
@@ -489,25 +511,26 @@ function drawStory(i, alpha = 0) {
   segs.push([t0, tmax, null]);
   for (const [a, b, p] of segs) {
     const w = X(b) - X(a);
-    const txt = p ? `разрыв связи: ${p.groups.length} подгруппы` : "связь есть";
+    const txt = p ? `разрыв связи: ${p.groups.length} ${plural(p.groups.length, "подгруппа", "подгруппы", "подгрупп")}` : "связь есть";
     g.font = (p ? "bold " : "") + "12px system-ui, sans-serif";
     if (w > g.measureText(txt).width + 8) { g.fillStyle = p ? "#991b1b" : "#166534"; g.fillText(txt, X(a) + 6, by + 14); }
   }
   // события
   g.font = "12px system-ui, sans-serif";
-  let lastRight = -1e9, row = 0;
+  const rowsRight = [-1e9, -1e9, -1e9];  // правый край последней подписи в каждом из трёх рядов
   for (const e of result.events) {
     const x = X(e.t);
     const col = e.kind === "fail" ? "#475569" : e.ok ? GREEN : RED;
     g.fillStyle = col; g.strokeStyle = col;
     g.beginPath(); g.moveTo(x, by - 2); g.lineTo(x - 5, by - 10); g.lineTo(x + 5, by - 10); g.fill();
     g.beginPath(); g.moveTo(x, by); g.lineTo(x, by + bh); g.stroke();
-    const tw = g.measureText(e.text).width;
-    row = x - 4 < lastRight ? (row + 1) % 2 : 0;
-    let tx = Math.min(Math.max(L, x - 6), R - tw);
-    const ty = row ? by + bh + 30 : by + bh + 15;
-    g.fillText(e.text, tx, ty);
-    lastRight = Math.max(lastRight, tx + tw + 10);
+    const tw = Math.min(g.measureText(e.text).width, R - L);
+    const tx = Math.min(Math.max(L, x - 6), R - tw);
+    // первый ряд, где подпись не налезает на предыдущую; если места нет — ряд с самым левым краем
+    let row = rowsRight.findIndex((r) => tx >= r);
+    if (row < 0) row = rowsRight.indexOf(Math.min(...rowsRight));
+    fit(g, e.text, tx, by + bh + 15 + row * 14, tw);
+    rowsRight[row] = tx + tw + 10;
   }
   g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
   const px = X(tNow);
@@ -518,25 +541,32 @@ function drawStory(i, alpha = 0) {
   g.fillStyle = INK; g.font = "bold 13px system-ui, sans-serif";
   const lbl = `${fmt(tNow, 0)} с`; g.fillText(lbl, Math.min(Math.max(px - 14, L), R - 40), by - 20 + 0);
 
-  const top = 112;
+  const top = 126;
   g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(0, top - 10); g.lineTo(W, top - 10); g.stroke();
 
   // 2. строй и радиосвязь
   const fw = 420, cx0 = fw / 2, cy0 = top + 40 + (H - top - 80) / 2;
   const k = Math.min((fw - 90) / 2, (H - top - 120) / 2) / result.formExt;
   g.fillStyle = INK; g.font = "bold 14px system-ui, sans-serif";
-  g.fillText("Строй (вид вблизи) и радиосвязь", 16, top + 8);
+  fit(g, "Строй (вид вблизи) и радиосвязь", 16, top + 8, fw - 30);
   g.font = "12px system-ui, sans-serif"; g.fillStyle = MUTED;
-  g.fillText("линия — борта слышат друг друга по радио", 16, top + 26);
+  fit(g, "линия — борта слышат друг друга по радио", 16, top + 26, fw - 30);
   const P = (u) => { const r = fr.rel[u[0]]; return [cx0 + r[0] * k, cy0 - r[1] * k]; };
   const byIdx = Object.fromEntries(fr.uavs.map((u) => [u[0], u]));
+  // линии связи — одним проходом на цвет, без полупрозрачности
   g.lineWidth = 1.5;
+  const edgeBy = new Map();
   for (const [a, b] of fr.edges) {
     const ua = byIdx[a], ub = byIdx[b];
     if (!ua || !ub) continue;
-    const [x1, y1] = P(ua), [x2, y2] = P(ub);
-    g.strokeStyle = fr.groups > 1 ? GROUP[ua[3] % GROUP.length] + "88" : "#86efac";
-    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    const col = fr.groups > 1 ? EDGE[ua[3] % EDGE.length] : "#86efac";
+    if (!edgeBy.has(col)) edgeBy.set(col, []);
+    edgeBy.get(col).push([P(ua), P(ub)]);
+  }
+  for (const [col, segs] of edgeBy) {
+    g.strokeStyle = col; g.beginPath();
+    for (const [[x1, y1], [x2, y2]] of segs) { g.moveTo(x1, y1); g.lineTo(x2, y2); }
+    g.stroke();
   }
   g.lineWidth = 1;
   for (const u of fr.uavs) {
@@ -556,43 +586,47 @@ function drawStory(i, alpha = 0) {
     g.beginPath(); g.moveTo(x, y - 9); g.lineTo(x + 8, y + 7); g.lineTo(x, y + 3); g.lineTo(x - 8, y + 7); g.closePath(); g.fill();
     g.fillStyle = INK; g.font = "11px system-ui, sans-serif"; g.fillText(uid(u[0]), x + 10, y + 4);
   }
+  // движение группы: скорость и пройденный путь (центр группы)
+  g.fillStyle = INK; g.font = "13px system-ui, sans-serif"; g.textAlign = "right";
+  fit(g, `движение: ${sce.swarm.speed_kmh} км/ч · пройдено ${fmt(fr.dist / 1000, 1)} км из ${sce.swarm.route_length_km}`, fw - 12, H - 12, fw - 120);
+  g.textAlign = "start";
   // масштаб
   const m = sce.swarm.spacing_m;
   g.strokeStyle = MUTED; g.beginPath(); g.moveTo(16, H - 18); g.lineTo(16 + m * k, H - 18); g.stroke();
   g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif"; g.fillText(`${m} м`, 16, H - 24);
   if (fr.groups > 1) {
-    g.fillStyle = RED; g.font = "bold 22px system-ui, sans-serif"; g.fillText("РАЗРЫВ СВЯЗИ", 16, top + 60);
-    g.font = "13px system-ui, sans-serif"; g.fillText(`подгрупп связи: ${fr.groups}, они не слышат друг друга`, 16, top + 80);
+    g.fillStyle = RED; g.font = "bold 22px system-ui, sans-serif"; fit(g, "РАЗРЫВ СВЯЗИ", 16, top + 60, fw - 30);
+    g.font = "13px system-ui, sans-serif"; fit(g, `подгрупп связи: ${fr.groups}, они не слышат друг друга`, 16, top + 80, fw - 30);
   }
 
   // 3. картины бортов
-  const x0 = fw + 30, pw = W - x0 - 20;
+  const x0 = fw + 30, pw = W - x0 - 20, PW = W - x0 - 16;
   g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(fw + 10, top - 10); g.lineTo(fw + 10, H); g.stroke();
   g.fillStyle = INK; g.font = "bold 14px system-ui, sans-serif";
-  g.fillText("Картины бортов", x0, top + 8);
+  fit(g, "Картины бортов", x0, top + 8, PW);
   g.font = "12px system-ui, sans-serif"; g.fillStyle = MUTED;
-  g.fillText("полоса — сколько сведений у борта; одинаковый цвет — одинаковая картина;", x0, top + 26);
-  g.fillText("точки — объекты в картине борта: ● есть у всех бортов, ○ только у своей подгруппы", x0, top + 40);
+  fit(g, "полоса — сколько сведений у борта; одинаковый цвет — одинаковая картина;", x0, top + 26, PW);
+  fit(g, "точки — объекты в картине борта: ● есть у всех бортов, ○ только у своей подгруппы", x0, top + 40, PW);
   const div = result.diverged[i];
   const nv = fr.variants;
   const syncing = result.events.find((e) => e.kind !== "fail" && e.conv !== null && tNow >= e.t && tNow < e.t + e.conv);
   g.font = "bold 16px system-ui, sans-serif";
   if (syncing) {
     g.fillStyle = "#b45309";
-    g.fillText(syncing.kind === "join" ? "Новый борт получает картину группы…" : "Связь восстановлена — идёт согласование картин…", x0, top + 64);
+    fit(g, syncing.kind === "join" ? "Новый борт получает картину группы…" : "Связь восстановлена — идёт согласование картин…", x0, top + 64, PW);
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#92400e";
-    g.fillText(`борта обмениваются накопленными сведениями: ${fmt(tNow - syncing.t, 2)} с`, x0, top + 80);
+    fit(g, `борта обмениваются накопленными сведениями: ${fmt(tNow - syncing.t, 2)} с`, x0, top + 80, PW);
   } else if (div) {
-    g.fillStyle = RED; g.fillText(`Картины расходятся: ${nv} разные картины`, x0, top + 64);
+    g.fillStyle = RED; fit(g, `Картины расходятся: ${nv} ${plural(nv, "разная картина", "разные картины", "разных картин")}`, x0, top + 64, PW);
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#7f1d1d";
-    g.fillText("у каждой подгруппы только свои сведения", x0, top + 80);
+    fit(g, "у каждой подгруппы только свои сведения", x0, top + 80, PW);
   } else {
     // «совпадают» — только если у всех работающих бортов одни и те же сведения; иначе
     // объекты картин одинаковы, а свежие записи ещё в пути (доходят за доли секунды)
     const recs = fr.uavs.filter((u) => u[4]).map((u) => u[6]);
     const lag = Math.max(...recs) - Math.min(...recs);
     g.fillStyle = GREEN;
-    g.fillText("✓ Картины всех бортов согласованы", x0, top + 64);
+    fit(g, "✓ Картины всех бортов согласованы", x0, top + 64, PW);
     const rec = result.events.filter((e) => e.kind !== "fail" && e.conv !== null && fr.t >= e.t && fr.t <= e.t + e.conv + 15).pop();
     g.font = "12px system-ui, sans-serif"; g.fillStyle = "#166534";
     const wr = lag === 1 ? "свежая запись" : lag < 5 ? "свежие записи" : "свежих записей";
@@ -601,11 +635,13 @@ function drawStory(i, alpha = 0) {
         (lag === 0 ? "; сведения у всех одинаковы" : `; в пути ${lag} ${wr}`)
       : lag === 0 ? "у всех бортов одни и те же сведения"
       : `объекты одинаковы; в пути ${lag} ${wr} — дойдут за доли секунды`;
-    g.fillText(line, x0, top + 80);
+    fit(g, line, x0, top + 80, PW);
   }
   const rows = sce.swarm.n_uav + Object.keys(result.joinT).length;
   const rh = Math.min(30, (H - top - 104) / rows), ry0 = top + 96;
-  const bx = x0 + 52, bw = 170, dx0 = bx + bw + 112;
+  const bx = x0 + 52, bw = 170;
+  g.font = "12px system-ui, sans-serif";
+  const dotX = Math.max(bx + bw + 112, bx + bw + 8 + g.measureText("сведений 00 000").width + 10);  // колонка точек — после подписи
   for (let r = 0; r < rows; r++) {
     const u = byIdx[r], y = ry0 + r * rh;
     g.font = "12px system-ui, sans-serif";
@@ -616,28 +652,157 @@ function drawStory(i, alpha = 0) {
     if (!u) {
       const coming = syncing && syncing.kind === "join" && nx.uavs.some((q) => q[0] === r);
       g.fillStyle = coming ? "#b45309" : GRAY;
-      g.fillText(coming ? "присоединяется — получает картину группы" : "ещё не в группе", bx + bw + 8, y + rh / 2 + 2);
+      fit(g, coming ? "присоединяется — получает картину группы" : "ещё не в группе", bx + bw + 8, y + rh / 2 + 2, W - 16 - (bx + bw + 8));
       continue;
     }
-    if (!u[4]) { g.fillStyle = GRAY; g.fillText("отказ — не работает", bx + bw + 8, y + rh / 2 + 2); continue; }
+    if (!u[4]) { g.fillStyle = GRAY; fit(g, "отказ — не работает", bx + bw + 8, y + rh / 2 + 2, W - 16 - (bx + bw + 8)); continue; }
     const rec = u[6];  // значения — ровно из кадра модели, без интерполяции
     g.fillStyle = syncing ? (u[7] === 0 ? "#f59e0b" : "#fbbf24") : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
     g.fillRect(bx, y + 3, Math.max(2, bw * rec / result.maxRec), rh - 10);
     g.fillStyle = INK;
-    g.fillText(`сведений ${int(rec)}`, bx + bw + 8, y + rh / 2 + 2);
+    fit(g, `сведений ${int(rec)}`, bx + bw + 8, y + rh / 2 + 2, dotX - (bx + bw + 8) - 6);
     // точки объектов: общие для всех бортов — залитые, известные только части бортов — полые
     const nC = u[8] || 0, nO = u[9] || 0, n = nC + nO;
-    const room = W - 20 - dx0 - 36, step = n ? Math.min(11, room / n) : 11, rd = Math.max(2, Math.min(4, step / 2 - 0.5));
+    const room = W - 20 - dotX - 36, step = n ? Math.min(11, room / n) : 11, rd = Math.max(2, Math.min(4, step / 2 - 0.5));
     const cy = y + rh / 2 - 2;
     const ccol = syncing ? "#d97706" : div ? VARIANT[u[7] % VARIANT.length] : GREEN;
-    for (let j = 0; j < n; j++) {
-      const cx = dx0 + j * step + rd;
-      g.beginPath(); g.arc(cx, cy, rd, 0, 2 * Math.PI);
-      if (j < nC) { g.fillStyle = "#334155"; g.fill(); }
-      else { g.strokeStyle = ccol; g.lineWidth = 1.6; g.stroke(); g.lineWidth = 1; }
+    // точки — одним проходом: залитые, затем полые
+    if (nC) {
+      g.fillStyle = "#334155"; g.beginPath();
+      for (let j = 0; j < nC; j++) { const cx = dotX + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
+      g.fill();
+    }
+    if (n > nC) {
+      g.strokeStyle = ccol; g.lineWidth = 1.6; g.beginPath();
+      for (let j = nC; j < n; j++) { const cx = dotX + j * step + rd; g.moveTo(cx + rd, cy); g.arc(cx, cy, rd, 0, 2 * Math.PI); }
+      g.stroke(); g.lineWidth = 1;
     }
     g.fillStyle = MUTED; g.font = "11px system-ui, sans-serif";
-    g.fillText(String(n), dx0 + n * step + 4, y + rh / 2 + 2);
+    g.fillText(String(n), dotX + n * step + 4, y + rh / 2 + 2);
+  }
+
+  // плашка события: держится BANNER_S секунд воспроизведения, время идёт равномерно
+  g.strokeStyle = "#e2e8f0"; g.beginPath(); g.moveTo(0, H); g.lineTo(W, H); g.stroke();
+  const ban = result.events.filter((e) => e.kind !== "fail" && tNow >= e.t && tNow < e.t + BANNER_S * playSpeed()).pop();
+  if (!ban) {
+    const next = result.events.find((e) => e.t > tNow);
+    g.fillStyle = "#94a3b8"; g.font = "14px system-ui, sans-serif"; g.textAlign = "center";
+    fit(g, next ? `Далее: ${next.kind === "fail" ? `отказ борта на ${Math.round(next.t)} с` : next.kind === "join" ? `присоединение борта ${next.who} на ${Math.round(next.t)} с` : `восстановление связи на ${Math.round(next.t)} с`}`
+      : result.events.length ? "Все события сценария пройдены" : "В сценарии нет событий", W / 2, H + BANNER_H / 2 + 5, W - 40);
+    g.textAlign = "start";
+  }
+  if (ban) {
+    const ok = ban.ok, tail = ban.conv === null ? "не достигнуто" : `за ${fmt(ban.conv)} с`;
+    const main = ban.kind === "join" ? `Присоединение борта ${ban.who} → получил картину группы ${tail}` : `Связь восстановлена → картины всех бортов совпали ${tail}`;
+    const sub = `требование ФТ № 1 — не более 1,5 с ${ok ? "✓" : "✗"}`;
+    g.font = "bold 22px system-ui, sans-serif";
+    const tw = Math.min(g.measureText(main).width, W - 100);
+    const bw2 = tw + 60, bh2 = BANNER_H - 12, bx2 = (W - bw2) / 2, by2 = H + 6;
+    g.fillStyle = ok ? "rgba(240,253,244,.97)" : "rgba(254,242,242,.97)";
+    g.strokeStyle = ok ? GREEN : RED; g.lineWidth = 3;
+    g.beginPath(); g.roundRect ? g.roundRect(bx2, by2, bw2, bh2, 10) : g.rect(bx2, by2, bw2, bh2); g.fill(); g.stroke(); g.lineWidth = 1;
+    g.fillStyle = ok ? "#14532d" : "#7f1d1d"; g.textAlign = "center";
+    fit(g, main, W / 2, by2 + 30, bw2 - 40);
+    g.font = "14px system-ui, sans-serif";
+    fit(g, sub, W / 2, by2 + 52, bw2 - 40);
+    g.textAlign = "start";
+  }
+}
+
+// ------------------------------------------------------------------ крупный план восстановления
+let cuSel = 0;
+
+function buildCloseup() {
+  const box = $("cu_btns"), cs = result.closeups || [];
+  box.innerHTML = "";
+  cs.forEach((c, k) => {
+    const b = document.createElement("button");
+    b.textContent = c.kind === "partition_end" ? `восстановление связи, ${Math.round(c.t_s)} с` : `присоединение борта ${c.kind.split(" ")[1] || ""}, ${Math.round(c.t_s)} с`;
+    b.onclick = () => { cuSel = k; drawCloseup(); };
+    box.appendChild(b);
+  });
+  cuSel = 0;
+  drawCloseup();
+}
+
+function drawCloseup() {
+  const cv = $("closeup"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  const cs = result.closeups || [];
+  [...$("cu_btns").children].forEach((b, k) => b.classList.toggle("on", k === cuSel));
+  if (!cs.length) {
+    g.fillStyle = MUTED; g.font = "14px system-ui, sans-serif";
+    g.fillText("В этом сценарии нет восстановления связи и присоединения бортов.", 20, 40);
+    return;
+  }
+  const c = cs[cuSel], r = result.summary.restores[cuSel];
+  const join = c.kind !== "partition_end", who = join ? Number(c.uav) : -1;
+  const L = 76, R = 24, T = 30, B = 46, pw = W - L - R, ph = H - T - B;
+  const x0 = -0.3, x1 = 2.0, X = (t) => L + ((t - x0) / (x1 - x0)) * pw;
+  const vals = c.pts.flatMap((p) => p[1].map((q) => q[1]));
+  let y0 = Math.min(...vals), y1 = Math.max(...vals, c.target || 0);
+  const pad = (y1 - y0) * 0.08 || 1; y0 -= pad; y1 += pad;
+  const Y = (v) => T + ph - ((v - y0) / (y1 - y0)) * ph;
+  // подгруппы в момент перед событием — для цвета линий
+  const before = result.frames.filter((f) => f.t <= c.t_s - 0.05).pop() || result.frames[0];
+  const grp = Object.fromEntries(before.uavs.map((u) => [u[0], u[3]]));
+  // оси
+  g.strokeStyle = "#cbd5e1"; g.fillStyle = MUTED; g.font = "12px system-ui, sans-serif";
+  for (const t of [0, 0.5, 1, 1.5, 2]) {
+    g.beginPath(); g.moveTo(X(t), T); g.lineTo(X(t), T + ph); g.stroke();
+    g.fillText(fmt(t, 1), X(t) - 8, T + ph + 16);
+  }
+  g.fillStyle = INK;
+  g.fillText(join ? `секунды после появления борта ${c.kind.split(" ")[1]}` : "секунды после восстановления связи", L + pw / 2 - 110, H - 8);
+  g.save(); g.translate(16, T + ph / 2 + 50); g.rotate(-Math.PI / 2); g.fillText("сведений у борта", 0, 0); g.restore();
+  g.fillStyle = MUTED;
+  g.fillText(int(Math.round(y1 - pad)), L - 62, Y(y1 - pad) + 4);
+  g.fillText(int(Math.round(y0 + pad)), L - 62, Y(y0 + pad) + 4);
+  // требование 1,5 с
+  g.strokeStyle = RED; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(X(1.5), T); g.lineTo(X(1.5), T + ph); g.stroke(); g.setLineDash([]);
+  g.fillStyle = RED; g.fillText("требование ФТ № 1: 1,5 с", X(1.5) + 5, T + 12);
+  // накоплено к моменту события
+  if (c.target !== null) {
+    g.strokeStyle = INK; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(X(0), Y(c.target)); g.lineTo(X(x1), Y(c.target)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = INK; g.fillText(`накоплено группой к моменту события: ${int(c.target)}`, X(0.55), Y(c.target) - 6);
+  }
+  // момент события
+  g.strokeStyle = "#475569"; g.beginPath(); g.moveTo(X(0), T); g.lineTo(X(0), T + ph); g.stroke();
+  g.fillStyle = "#475569"; g.fillText(join ? "борт появился" : "связь восстановлена", X(0) + 5, T + 12);
+  // линии бортов
+  const ids = [...new Set(c.pts.flatMap((p) => p[1].map((q) => q[0])))].sort((a, b) => a - b);
+  for (const id of ids) {
+    const pts = c.pts.map((p) => [p[0], (p[1].find((q) => q[0] === id) || [])[1]]).filter((p) => p[1] !== undefined);
+    if (!pts.length) continue;
+    g.strokeStyle = id === who ? "#f59e0b" : GROUP[(grp[id] ?? 0) % GROUP.length];
+    g.lineWidth = id === who ? 3 : 1.6;
+    g.beginPath();
+    pts.forEach(([t, v], k) => { const x = X(t), y = Y(v); if (!k) g.moveTo(x, y); else { g.lineTo(x, Y(pts[k - 1][1])); g.lineTo(x, y); } });
+    g.stroke(); g.lineWidth = 1;
+    const [tl, vl] = pts[pts.length - 1];
+    g.fillStyle = g.strokeStyle; g.font = "11px system-ui, sans-serif";
+  }
+  // момент схождения
+  if (r && r.store_conv_s !== null) {
+    const x = X(r.store_conv_s), ok = r.store_conv_s <= 1.5;
+    g.strokeStyle = ok ? GREEN : RED; g.lineWidth = 2.5; g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke(); g.lineWidth = 1;
+    g.fillStyle = ok ? "#14532d" : "#7f1d1d"; g.font = "bold 13px system-ui, sans-serif";
+    g.fillText(`${join ? "борт получил всё" : "у всех бортов — всё накопленное"}: ${fmt(r.store_conv_s)} с ${ok ? "✓" : "✗"}`, x + 6, T + ph - 10);
+  }
+  // легенда
+  g.font = "12px system-ui, sans-serif";
+  const seen = new Set(), items = [];
+  for (const id of ids) {
+    const key = id === who ? "new" : grp[id] ?? 0;
+    if (seen.has(key)) continue; seen.add(key);
+    items.push([id === who ? `новый борт ${uid(id)}` : before.groups > 1 ? `подгруппа ${Number(key) + 1}` : "борта группы",
+      id === who ? "#f59e0b" : GROUP[Number(key) % GROUP.length]]);
+  }
+  let lx = W - R;  // легенда — справа сверху
+  for (const [label, col] of items.reverse()) {
+    lx -= g.measureText(label).width + 18;
+    g.fillStyle = col; g.fillRect(lx, 8, 14, 4); g.fillStyle = INK; g.fillText(label, lx + 18, 13);
+    lx -= 22;
   }
 }
 
@@ -687,25 +852,28 @@ function drawMap(i) {
 }
 
 // ------------------------------------------------------------------ воспроизведение
+let lastMapMs = 0;
+
 function showFrame(i, alpha = 0) {
   frameIdx = Math.max(0, Math.min(i, result.frames.length - 1));
   drawStory(frameIdx, alpha);
-  drawMap(frameIdx);
+  // карта второстепенна: при воспроизведении — не чаще 8 раз в секунду
+  const now = performance.now();
+  if (!playing || now - lastMapMs > 125 || frameIdx === result.frames.length - 1) { drawMap(frameIdx); lastMapMs = now; }
   $("time").value = frameIdx;
   $("tlabel").textContent = `${fmt(result.frames[frameIdx].t, 0)} с из ${Math.round(result.tmax)}`;
 }
 
-function speedAt(t) {
+const SPEEDS = [5, 10, 12, 15, 20, 30, 40, 50, 60, 80, 100];
+
+/** Скорость воспроизведения — постоянная на весь прогон; «авто»: весь полёт ≈ за 20 с. */
+function playSpeed() {
   const sel = Number($("speed").value);
   if (sel) return sel;
-  const auto = Math.max(5, result.tmax / 20);
-  // рядом с восстановлением связи и присоединением — замедление, чтобы было видно схождение картин
-  for (const e of result.events)
-    if (e.kind !== "fail" && t >= e.t - 1 && t <= e.t + (e.conv || 1) + 1) return 0.25;
-  for (const e of result.events)
-    if (e.kind !== "fail" && t >= e.t - 4 && t <= e.t + (e.conv || 1) + 4) return 2;
-  return auto;
+  return SPEEDS.find((v) => v >= result.tmax / 20) || SPEEDS[SPEEDS.length - 1];
 }
+
+function showSpeed() { $("speedval").textContent = result ? `×${playSpeed()}` : ""; }
 
 // кадр по модельному времени: индекс и доля пути до следующего кадра
 function frameAt(t) {
@@ -719,9 +887,11 @@ function frameAt(t) {
 
 function tick(ts) {
   if (!playing) return;
-  const dt = Math.min(0.1, (ts - lastTs) / 1000);
+  // время воспроизведения — по реальным часам; если кадр рисуется медленно, промежуточные
+  // кадры пропускаются, а не замедляется время
+  const dt = Math.max(0, (ts - lastTs) / 1000);
   lastTs = ts;
-  playT += dt * speedAt(playT);
+  playT += dt * playSpeed();
   if (playT >= result.tmax) { playT = result.tmax; showFrame(result.frames.length - 1); return stopPlay(); }
   showFrame(...frameAt(playT));
   requestAnimationFrame(tick);
@@ -814,6 +984,8 @@ async function main() {
   $("stop").onclick = stop;
   $("reset").onclick = () => choosePreset(preset);
   $("play").onclick = togglePlay;
+  $("speed").onchange = showSpeed;
+  document.addEventListener("visibilitychange", () => { lastTs = performance.now(); });
   $("time").oninput = (e) => { stopPlay(); showFrame(Number(e.target.value)); playT = result.frames[frameIdx].t; };
   $("dl_summary").onclick = () => download("summary.json", JSON.stringify(result.summary, null, 2), "application/json");
   $("dl_series").onclick = () => download("series.csv", seriesCsv(), "text/csv");
