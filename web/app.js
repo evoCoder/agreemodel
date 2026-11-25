@@ -321,7 +321,7 @@ function prepare() {
   for (const e of sce.event)
     if (e.kind === "fail") evs.push({ t: e.t_s, kind: "fail", text: `отказ борта ${uid(e.uav)}` });
   for (const r of s.restores) {
-    const okr = r.store_conv_s !== null && r.store_conv_s <= 1.5;
+    const okr = r.store_conv_s !== null && r.store_conv_s <= reqOf(r);
     if (r.kind === "partition_end")
       evs.push({ t: r.t_s, kind: "restore", ok: okr, conv: r.store_conv_s,
         text: `связь восстановлена → согласованность восстановлена ${r.store_conv_s === null ? "— не достигнута" : "за " + fmt(r.store_conv_s) + " с"}` });
@@ -339,29 +339,47 @@ function prepare() {
 // ------------------------------------------------------------------ результат
 const okMark = (b) => (b === null ? "" : b ? '<span class="pass">✓</span>' : '<span class="fail">✗</span>');
 
+// Требования — дословно по «05 Технические характеристики» (разд. 1–2).
+const REQ_RESTORE = 1.5, REQ_JOIN = 3.0;
+const reqOf = (r) => (r.kind && r.kind.startsWith("join") ? REQ_JOIN : REQ_RESTORE);
+
+/** Ошибки сопоставления наблюдений: дубликаты, смешанные и поглощённые — доля от обнаруженных объектов. */
+function matchErrors(s) {
+  const a = result && result.association && !result.association.error ? result.association[result.association.used] : null;
+  const p = s.picture, absorbed = a ? a.absorbed : 0;
+  const n = p.duplicates + p.mixed_objects + absorbed;
+  // требование «не более 10 %» задано для базового сценария (одиночные объекты); на группах
+  // близких объектов оценивается сравнение с правиловым вариантом («Применение ИИ»)
+  const base = !result || (result.scenario.objects.cluster_size || 1) <= 1;
+  return { n, dup: p.duplicates, mixed: p.mixed_objects, absorbed, det: p.truth_detected, base,
+    pct: p.truth_detected ? (100 * n) / p.truth_detected : 0 };
+}
+
 function cardsData(s, sce) {
   const parts = s.restores.filter((r) => r.kind === "partition_end");
   const joins = s.restores.filter((r) => r.kind.startsWith("join"));
   const worst = (rs) => rs.reduce((m, r) => (r.store_conv_s === null || m === null ? null : Math.max(m, r.store_conv_s)), 0);
   const miss = Object.values(s.records_missing_per_uav).reduce((a, b) => a + b, 0);
+  const missPct = s.records_union ? (100 * miss) / s.records_union : 0;
   const cards = [];
   if (parts.length) {
     const w = worst(parts);
     cards.push({ term: "восстановление согласованности", title: "Восстановление согласованности после разрыва связи",
-      value: w === null ? "не достигнуто" : `${fmt(w)} с`, req: "≤ 1,5 с", ok: w !== null && w <= 1.5,
+      value: w === null ? "не достигнуто" : `${fmt(w)} с`, req: "не более 1,5 с", ok: w !== null && w <= REQ_RESTORE,
       note: w === null ? "Картины бортов не сошлись." : `Через столько после возобновления связи картины всех бортов снова совпали${parts.length > 1 ? ` (наибольшее из ${parts.length} разрывов)` : ""}.` });
-  } else cards.push({ term: "восстановление согласованности", title: "Восстановление согласованности после разрыва связи", value: "—", req: "≤ 1,5 с", ok: null, note: "В этом сценарии разрыва связи нет." });
+  } else cards.push({ term: "восстановление согласованности", title: "Восстановление согласованности после разрыва связи", value: "—", req: "не более 1,5 с", ok: null, note: "В этом сценарии разрыва связи нет." });
   if (joins.length) {
     const w = worst(joins);
-    cards.push({ term: "присоединение борта", title: "Получение картины присоединившимся бортом",
-      value: w === null ? "не получил" : `${fmt(w)} с`, req: "≤ 1,5 с", ok: w !== null && w <= 1.5,
+    cards.push({ term: "присоединение борта", title: "Присоединение нового или повторно подключающегося БВС",
+      value: w === null ? "не получил" : `${fmt(w)} с`, req: "не более 3 с", ok: w !== null && w <= REQ_JOIN,
       note: "За столько новый борт получил всю картину, накопленную группой." });
-  } else cards.push({ term: "присоединение борта", title: "Получение картины присоединившимся бортом", value: "—", req: "≤ 1,5 с", ok: null, note: "В этом сценарии присоединения нет." });
-  cards.push({ term: "потери записей", title: "Потери записей при синхронизации", value: int(miss), req: "0", ok: miss === 0,
-    note: miss === 0 ? `Все ${int(s.records_union)} записей дошли до всех работающих бортов.` : `Не дошли до части бортов из ${int(s.records_union)}.` });
-  const d = s.picture.duplicates;
-  cards.push({ term: "логический дубликат", title: "Логические дубликаты", value: int(d), req: "минимизируются", ok: d === 0 ? true : null,
-    note: d === 0 ? `Каждый из ${s.picture.objects} объектов картины записан один раз.` : `Из ${s.picture.objects} объектов картины (${fmt(100 * d / Math.max(1, s.picture.objects), 0)} %).` });
+  } else cards.push({ term: "присоединение борта", title: "Присоединение нового или повторно подключающегося БВС", value: "—", req: "не более 3 с", ok: null, note: "В этом сценарии присоединения нет." });
+  cards.push({ term: "потери записей", title: "Потери записей при синхронизации", value: int(miss), req: "не более 1 %", ok: missPct <= 1,
+    note: miss === 0 ? `Все ${int(s.records_union)} записей дошли до всех работающих бортов.` : `${fmt(missPct, 2)} % из ${int(s.records_union)} записей не дошли до части бортов.` });
+  const e = matchErrors(s);
+  cards.push({ term: "ошибки сопоставления наблюдений", title: "Ошибки сопоставления наблюдений", value: `${fmt(e.pct, 1)} %`, req: "не более 10 % (по серии не менее 10 прогонов базового сценария)", ok: e.base ? e.pct <= 10 : null,
+    note: `Дубликатов ${e.dup}, смешанных ${e.mixed}, поглощённых ${e.absorbed} из ${e.det} обнаруженных объектов интереса; это один прогон.` +
+      (e.base ? "" : " Здесь объекты стоят группами — требование задано для базового сценария; на группах оценивается сравнение с правилами (ниже).") });
   return cards;
 }
 
@@ -371,17 +389,17 @@ function renderCards(s) {
   box.innerHTML = data.map((c) => `<div class="card ${c.ok === true ? "good" : c.ok === false ? "bad" : "neutral"}">
     <div class="ct"><span data-term="${c.term}">${c.title}</span></div>
     <div class="cv">${c.value} ${okMark(c.ok)}</div>
-    <div class="cr">требование ФТ № 1: ${c.req}</div>
+    <div class="cr">требование: ${c.req}</div>
     <div class="cn">${c.note}</div></div>`).join("");
   applyTerms(box);
 }
 
 function cardsData0() {
   const t = (term, title, req) => ({ term, title, value: "—", req, ok: null, note: "Запустите сценарий." });
-  return [t("восстановление согласованности", "Восстановление согласованности после разрыва связи", "≤ 1,5 с"),
-    t("присоединение борта", "Получение картины присоединившимся бортом", "≤ 1,5 с"),
-    t("потери записей", "Потери записей при синхронизации", "0"),
-    t("логический дубликат", "Логические дубликаты", "минимизируются")];
+  return [t("восстановление согласованности", "Восстановление согласованности после разрыва связи", "не более 1,5 с"),
+    t("присоединение борта", "Присоединение нового или повторно подключающегося БВС", "не более 3 с"),
+    t("потери записей", "Потери записей при синхронизации", "не более 1 %"),
+    t("ошибки сопоставления наблюдений", "Ошибки сопоставления наблюдений", "не более 10 % (по серии не менее 10 прогонов базового сценария)")];
 }
 
 function renderAI(a) {
@@ -399,13 +417,13 @@ function renderAI(a) {
     ${row("смешанные объекты", "смешанный объект", "mixed_objects")}${row("поглощённые объекты", "поглощённый объект", "absorbed")}
     ${row("логические дубликаты", "логический дубликат", "duplicates")}${row("ложные объекты", "", "false_objects")}</table>
     <p>Обе картины построены по одним и тем же итоговым сведениям борта — обмен между бортами от способа ассоциации не зависит. В этом прогоне борта использовали: ${used}.
-    Это один прогон. По серии цикла 4: на группах близких объектов с ИИ ошибок картины меньше на 20–30 %, на обычных сценариях — не хуже правил.</p>`;
+    Это один прогон. По циклу 4: на группах близких объектов ошибок картины меньше на 20–30 %, на обычных сценариях — не хуже правил.</p>`;
   applyTerms(box);
 }
 
 function restoreName(r) {
   if (r.kind === "partition_end") return `<span data-term="восстановление согласованности">Восстановление согласованности</span> после разрыва связи (связь возобновилась на ${r.t_s} с)`;
-  if (r.kind.startsWith("join")) return `Получение картины <span data-term="присоединение борта">присоединившимся бортом</span> ${r.kind.split(" ")[1] || ""} (${r.t_s} с)`;
+  if (r.kind.startsWith("join")) return `<span data-term="присоединение борта">Присоединение нового или повторно подключающегося БВС</span> ${r.kind.split(" ")[1] || ""} (${r.t_s} с)`;
   return `Восстановление согласованности: ${r.kind} (${r.t_s} с)`;
 }
 
@@ -413,29 +431,33 @@ function showResult() {
   const s = result.summary, sce = result.scenario;
   renderCards(s);
   renderAI(result.association);
-  const rows = [["Показатель", "Требование ФТ № 1", "Получено", "", "Что это значит"]];
-  rows.push(['<span data-term="квант обработки">Квант обработки</span> и выдачи обновлённого состояния', "≤ 0,5 с",
+  const rows = [["Показатель", "Требование (ТЗ)", "Получено", "", "Что это значит"]];
+  rows.push(['<span data-term="квант обработки">Квант обработки</span> и выдачи обновлённого состояния', "не более 0,5 с",
     `${fmt(s.quantum_s.max)} с`, okMark(s.quantum_s.max <= 0.5), "Как часто каждый борт обновляет свою картину (наибольший интервал за полёт)."]);
   const gaps = sce.net.partition.map((p) => p.end_s - p.start_s);
-  rows.push(['Длительность <span data-term="разрыв связи">разрыва связи</span>', "до 15 мин",
+  rows.push(['Длительность <span data-term="разрыв связи">разрывов связи</span>', "до 15 мин включительно",
     gaps.length ? `${fmt(Math.max(...gaps) / 60)} мин` : "разрыва нет", "", "Сколько подгруппы работали без связи друг с другом."]);
   for (const r of s.restores) {
-    const ok = r.store_conv_s !== null && r.store_conv_s <= 1.5;
-    rows.push([restoreName(r), "≤ 1,5 с", r.store_conv_s === null ? "не достигнуто" : `${fmt(r.store_conv_s)} с`, okMark(ok),
+    const ok = r.store_conv_s !== null && r.store_conv_s <= reqOf(r);
+    rows.push([restoreName(r), r.kind === "partition_end" ? "не более 1,5 с" : "не более 3 с", r.store_conv_s === null ? "не достигнуто" : `${fmt(r.store_conv_s)} с`, okMark(ok),
       r.kind === "partition_end" ? "От возобновления связи до момента, когда у всех бортов одни и те же сведения." : "От появления нового борта до момента, когда у него вся картина группы."]);
   }
-  rows.push(['<span data-term="картина борта">Картины</span> всех бортов в конце совпадают', "одинаковое состояние",
-    s.final_pictures_identical ? `да, через ${fmt(s.settle_conv_s)} с` : "нет", okMark(s.final_pictures_identical),
-    "После остановки записи и продолжения обмена картины всех работающих бортов одинаковы."]);
+  if (s.fix_latency_s) rows.push(["Задержка фиксации нового наблюдения", "не более 1 с", `${fmt(s.fix_latency_s.max)} с`, okMark(s.fix_latency_s.max <= 1),
+    "От кадра, подтвердившего трек, до записи в хранилище борта."]);
   const miss = Object.values(s.records_missing_per_uav).reduce((a, b) => a + b, 0);
-  rows.push(['<span data-term="потери записей">Потери записей</span>', "0", `${miss} из ${int(s.records_union)}`, okMark(miss === 0),
-    "Сведения, которые есть хотя бы у одного борта, но не дошли до другого."]);
+  rows.push(['<span data-term="потери записей">Потери записей</span> при синхронизации', "не более 1 %", `${miss} из ${int(s.records_union)}`, okMark(miss <= 0.01 * s.records_union),
+    "Сведения, которые есть хотя бы у одного работоспособного борта, но не дошли до другого."]);
+  rows.push(['Совпадение <span data-term="картина борта">картин</span> всех БВС после восстановления согласованности', "100 %",
+    s.final_pictures_identical ? `100 % (через ${fmt(s.settle_conv_s)} с)` : "нет", okMark(s.final_pictures_identical),
+    "После остановки записи и продолжения обмена картины всех работающих бортов одинаковы."]);
+  const e = matchErrors(s);
+  rows.push(['<span data-term="ошибки сопоставления наблюдений">Ошибки сопоставления наблюдений</span>', "не более 10 % (по серии не менее 10 прогонов базового сценария)",
+    `${fmt(e.pct, 1)} % (${e.n} из ${e.det})`, e.base ? okMark(e.pct <= 10) : "",
+    `Дубликатов ${e.dup}, смешанных ${e.mixed}, поглощённых ${e.absorbed}; один прогон.` + (e.base ? "" : " Объекты группами — требование задано для базового сценария.")]);
   const p = s.picture;
-  rows.push(['<span data-term="логический дубликат">Логические дубликаты</span>', "минимизируются", `${p.duplicates}`, okMark(p.duplicates === 0 ? true : null),
-    "Один реальный объект записан в картине дважды."]);
   rows.push(['Объекты картины / обнаруженные <span data-term="объект эталона">объекты эталона</span>', "—",
-    `${p.objects} / ${p.truth_detected}; ложных ${p.false_objects}, смешанных ${p.mixed_objects}`, "",
-    "Сколько объектов в картине и сколько реальных объектов борта увидели; ложный — реального объекта нет; смешанный — два реальных записаны как один."]);
+    `${p.objects} / ${p.truth_detected}; ложных ${p.false_objects}`, "",
+    "Сколько объектов в картине и сколько реальных объектов борта увидели; ложный — реального объекта нет."]);
   $("metrics").innerHTML = rows.map((r, i) => `<tr>${r.map((c) => (i ? `<td>${c}</td>` : `<th>${c}</th>`)).join("")}</tr>`).join("");
   applyTerms($("metrics"));
 
@@ -694,7 +716,7 @@ function drawStory(i, alpha = 0) {
   if (ban) {
     const ok = ban.ok, tail = ban.conv === null ? "не достигнуто" : `за ${fmt(ban.conv)} с`;
     const main = ban.kind === "join" ? `Присоединение борта ${ban.who} → получил картину группы ${tail}` : `Связь восстановлена → картины всех бортов совпали ${tail}`;
-    const sub = `требование ФТ № 1 — не более 1,5 с ${ok ? "✓" : "✗"}`;
+    const sub = ban.kind === "join" ? `требование ТЗ — не более 3 с ${ok ? "✓" : "✗"}` : `требование ФТ № 1 — не более 1,5 с ${ok ? "✓" : "✗"}`;
     g.font = "bold 22px system-ui, sans-serif";
     const tw = Math.min(g.measureText(main).width, W - 100);
     const bw2 = tw + 60, bh2 = BANNER_H - 12, bx2 = (W - bw2) / 2, by2 = H + 6;
@@ -738,7 +760,8 @@ function drawCloseup() {
   const c = cs[cuSel], r = result.summary.restores[cuSel];
   const join = c.kind !== "partition_end", who = join ? Number(c.uav) : -1;
   const L = 76, R = 24, T = 30, B = 46, pw = W - L - R, ph = H - T - B;
-  const x0 = -0.3, x1 = 2.0, X = (t) => L + ((t - x0) / (x1 - x0)) * pw;
+  const req = join ? REQ_JOIN : REQ_RESTORE;
+  const x0 = -0.3, x1 = join ? 3.2 : 2.0, X = (t) => L + ((t - x0) / (x1 - x0)) * pw;
   const vals = c.pts.flatMap((p) => p[1].map((q) => q[1]));
   let y0 = Math.min(...vals), y1 = Math.max(...vals, c.target || 0);
   const pad = (y1 - y0) * 0.08 || 1; y0 -= pad; y1 += pad;
@@ -748,7 +771,7 @@ function drawCloseup() {
   const grp = Object.fromEntries(before.uavs.map((u) => [u[0], u[3]]));
   // оси
   g.strokeStyle = "#cbd5e1"; g.fillStyle = MUTED; g.font = "12px system-ui, sans-serif";
-  for (const t of [0, 0.5, 1, 1.5, 2]) {
+  for (const t of join ? [0, 0.5, 1, 1.5, 2, 2.5, 3] : [0, 0.5, 1, 1.5, 2]) {
     g.beginPath(); g.moveTo(X(t), T); g.lineTo(X(t), T + ph); g.stroke();
     g.fillText(fmt(t, 1), X(t) - 8, T + ph + 16);
   }
@@ -759,8 +782,8 @@ function drawCloseup() {
   g.fillText(int(Math.round(y1 - pad)), L - 62, Y(y1 - pad) + 4);
   g.fillText(int(Math.round(y0 + pad)), L - 62, Y(y0 + pad) + 4);
   // требование 1,5 с
-  g.strokeStyle = RED; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(X(1.5), T); g.lineTo(X(1.5), T + ph); g.stroke(); g.setLineDash([]);
-  g.fillStyle = RED; g.fillText("требование ФТ № 1: 1,5 с", X(1.5) + 5, T + 12);
+  g.strokeStyle = RED; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(X(req), T); g.lineTo(X(req), T + ph); g.stroke(); g.setLineDash([]);
+  g.fillStyle = RED; g.textAlign = "right"; g.fillText(join ? "требование ТЗ: 3 с" : "требование ФТ № 1: 1,5 с", X(req) - 5, T + 12); g.textAlign = "start";
   // накоплено к моменту события
   if (c.target !== null) {
     g.strokeStyle = INK; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(X(0), Y(c.target)); g.lineTo(X(x1), Y(c.target)); g.stroke(); g.setLineDash([]);
@@ -784,7 +807,7 @@ function drawCloseup() {
   }
   // момент схождения
   if (r && r.store_conv_s !== null) {
-    const x = X(r.store_conv_s), ok = r.store_conv_s <= 1.5;
+    const x = X(r.store_conv_s), ok = r.store_conv_s <= req;
     g.strokeStyle = ok ? GREEN : RED; g.lineWidth = 2.5; g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke(); g.lineWidth = 1;
     g.fillStyle = ok ? "#14532d" : "#7f1d1d"; g.font = "bold 13px system-ui, sans-serif";
     g.fillText(`${join ? "борт получил всё" : "у всех бортов — всё накопленное"}: ${fmt(r.store_conv_s)} с ${ok ? "✓" : "✗"}`, x + 6, T + ph - 10);
@@ -931,7 +954,7 @@ function drawChart() {
   for (const r of result.summary.restores) {
     if (r.store_conv_s === null) continue;
     const x = X(r.t_s + r.store_conv_s), y = y1(1, m1);
-    g.fillStyle = r.store_conv_s <= 1.5 ? GREEN : RED;
+    g.fillStyle = r.store_conv_s <= reqOf(r) ? GREEN : RED;
     g.beginPath(); g.moveTo(x, y - 6); g.lineTo(x + 5, y); g.lineTo(x, y + 6); g.lineTo(x - 5, y); g.fill();
     g.fillText(`${fmt(r.store_conv_s)} с`, x + 7, y - 6);
   }

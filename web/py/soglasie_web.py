@@ -102,7 +102,8 @@ def frame(sim: Simulation, t: float, alive: list[int], view: int) -> dict[str, A
             "groups": len(comps), "variants": len(variants), "truth": truth, "pic": objs, "view": v}
 
 
-CLOSEUP_S = (-0.3, 2.0)  # окно «крупного плана» вокруг восстановления связи и присоединения, с
+CLOSEUP_S = (-0.3, 2.0)       # окно «крупного плана» вокруг восстановления связи, с
+CLOSEUP_JOIN_S = (-0.3, 3.2)  # окно вокруг присоединения борта (требование ТЗ — не более 3 с), с
 
 
 class WebSimulation(Simulation):
@@ -121,8 +122,8 @@ class WebSimulation(Simulation):
     def _restore_check(self, t: float) -> None:
         super()._restore_check(t)
         try:
-            lo, hi = CLOSEUP_S
             for r, c in zip(self.restores, self.closeups):
+                lo, hi = CLOSEUP_JOIN_S if str(r.kind).startswith("join") else CLOSEUP_S
                 if r.t_s + lo - 1e-9 <= t <= r.t_s + hi + 1e-9:
                     alive = self.alive()
                     if c["target"] is None and r.target is not None:
