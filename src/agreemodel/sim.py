@@ -104,7 +104,11 @@ class Simulation:
     def _emit(self, t: float, i: int, out, on_done=None) -> bool:
         if out.dst is None:
             return self.net.broadcast(t, i, out.kind, out.payload, out.size, on_done)
-        return self.net.send(t, i, out.dst, out.kind, out.payload, out.size, on_done)
+        valid = None
+        if out.kind == "REQ" and self.sc.node.drop_stale_requests:
+            n = self.nodes[i]
+            valid = lambda _t, n=n, req=out.payload: n.request_still_needed(req)
+        return self.net.send(t, i, out.dst, out.kind, out.payload, out.size, on_done, valid)
 
     def _emit_part(self, t: float, i: int, origin: str, f: int, to: int, out) -> None:
         n = self.nodes[i]

@@ -333,3 +333,27 @@ def test_empty_end_marker_does_not_displace_parked_part():
     r.on_delta_c1(1.01, 0, Delta((DeltaPart("U01", k, k, ()),)))
     r.on_delta_c1(1.1, 0, Delta((parts[0],)))
     assert r.store.version_vector()["U01"] == 40  # отложенное применилось целиком
+
+
+def test_stale_request_is_trimmed_or_dropped_before_transmission():
+    a = _node(0, "U01")
+    a.peer_vv = {1: (1.0, {"U02": 50})}
+    a.uid_of = {1: "U02"}
+    (req,) = a.request_due(1.0)
+    payload = req.payload
+    assert payload == {"U02": (0, 0)}
+    src = _node(1, "U02")
+    _writes(src, 20)
+    a.store.apply(src.store.delta_for({}))  # до отправки запроса часть уже получена
+    assert a.request_still_needed(payload) and payload == {"U02": (20, 0)}
+    _writes(src, 50)
+    a.store.apply(src.store.delta_for({"U02": 20}))
+    assert not a.request_still_needed(payload)  # всё получено — запрос не передаётся
+
+
+def test_network_drops_stale_message_before_transmission():
+    n = _net(loss=0.0, medium="shared", mtu_bytes=10_000)
+    n.send(0.0, 0, 1, "BIG", None, 6250)
+    n.send(0.0, 0, 1, "REQ", None, 20, valid=lambda t: False)
+    got = [m.kind for m in _drain(n, 1.0)]
+    assert got == ["BIG"] and n.msgs_dropped == 1

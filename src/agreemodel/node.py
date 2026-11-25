@@ -577,19 +577,7 @@ class Node:
                 # пропуск обнаружен сразу (доставка от одного борта — по порядку):
                 # дозапросить у отправителя только его, не дожидаясь срока ожидания
                 gap_end = min(pk) if pk else part.from_excl
-                prev = self.nacked.get(part.origin)
-                if prev is None or prev[0] != (cur, gap_end) or t_s - prev[1] > self.rto:
-                    self.nacked[part.origin] = ((cur, gap_end), t_s)
-                    nacks[part.origin] = (cur, gap_end)
-                    rq = self.req.get(part.origin)
-                    # дозапрос — тоже ожидаемый ответ: таймер не должен его повторить, но
-                    # ответ на него (одна-две части) ждётся недолго
-                    want = max(part.to_incl, self.peer_vv.get(src, (0, {}))[1]
-                               .get(part.origin, 0))
-                    if rq is not None:
-                        want = max(want, rq.want_to)
-                    self.req[part.origin] = Pending(want, t_s, t_s + self.cfg.nack_timeout_s,
-                                                    1 if rq is None else rq.tries, (src,), True)
+                self._nack(part.origin, cur, gap_end, part.to_incl, t_s, src, nacks)
                 continue
             k = self.store.apply(Delta((part,))) + self._drain(part.origin)
             n += k
@@ -597,6 +585,13 @@ class Node:
             if k and rq is not None:
                 # данные по источнику идут — ответ в пути, срок ожидания продлевается
                 rq.deadline = max(rq.deadline, t_s + self.cfg.nack_timeout_s)
+            pk = self.parked.get(part.origin)
+            if k and pk:
+                # пропуск заполнен, но за ним есть следующий (отложенные части дальше):
+                # дозапросить его сразу, а не ждать новой части или срока ожидания
+                cur = self.store.version_vector().get(part.origin, 0)
+                self._nack(part.origin, cur, min(pk), max(q.to_incl for q in pk.values()),
+                           t_s, src, nacks)
         if n:
             self.dirty = True
         mine = self.store.version_vector()
@@ -615,6 +610,38 @@ class Node:
         if not nacks:
             return []
         return [Out("REQ", src, nacks, 8 + 14 * len(nacks))]
+
+    def request_still_needed(self, req: dict[str, tuple[int, int]]) -> bool:
+        """Перед передачей запроса: убрать уже полученное (начало диапазона — текущая
+        версия); False — запрашивать нечего."""
+        mine = self.store.version_vector()
+        for origin in list(req):
+            d, upto = req[origin]
+            have = mine.get(origin, 0)
+            p = self.req.get(origin)
+            target = upto if upto else (p.want_to if p is not None else 0)
+            if target and have >= target:
+                del req[origin]
+            elif have > d:
+                req[origin] = (have, upto)
+        return bool(req)
+
+    def _nack(self, origin: str, cur: int, gap_end: int, want_hint: int, t_s: float,
+              src: int, nacks: dict[str, tuple[int, int]]) -> None:
+        """Дозапрос пропуска (cur, gap_end] у отправителя src (с подавлением повтора)."""
+        prev = self.nacked.get(origin)
+        if prev is not None and prev[0] == (cur, gap_end) and t_s - prev[1] <= self.rto:
+            return
+        self.nacked[origin] = ((cur, gap_end), t_s)
+        nacks[origin] = (cur, gap_end)
+        rq = self.req.get(origin)
+        # дозапрос — тоже ожидаемый ответ: таймер не должен его повторить, но ответ на
+        # него (одна-две части) ждётся недолго
+        want = max(want_hint, self.peer_vv.get(src, (0, {}))[1].get(origin, 0))
+        if rq is not None:
+            want = max(want, rq.want_to)
+        self.req[origin] = Pending(want, t_s, t_s + self.cfg.nack_timeout_s,
+                                   1 if rq is None else rq.tries, (src,), True)
 
     def _drain(self, origin: str) -> int:
         pk = self.parked.get(origin)

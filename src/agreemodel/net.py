@@ -56,6 +56,8 @@ class _Out:
     frags: list[int]
     sent: int = 0
     active: bool = False  # пакет этого сообщения сейчас в эфире
+    # проверка перед началом передачи: False — сообщение устарело и снимается с очереди
+    valid: Callable[[float], bool] | None = None
 
 
 @dataclass
@@ -81,6 +83,7 @@ class Network:
         self.frags_sent = 0
         self.msgs_lost = 0  # недоставок получателям
         self.deliveries = 0  # доставок получателям (широковещание — по каждому)
+        self.msgs_dropped = 0  # снято с очереди как устаревшее
         self.air_s = 0.0  # суммарное время занятости эфира
         self.positions: dict[int, tuple[float, float]] = {}
         self.alive: set[int] = set()
@@ -138,10 +141,12 @@ class Network:
             self._start_next(ch_key, ch, t)
 
     def send(self, t: float, src: int, dst: int, kind: str, payload: Any, size: int,
-             on_done: Callable[[float], None] | None = None) -> bool:
+             on_done: Callable[[float], None] | None = None,
+             valid: Callable[[float], bool] | None = None) -> bool:
         if not self.reachable(src, dst, t):
             return False
-        self._enqueue_out(t, _Out(t, src, dst, kind, payload, size, on_done, self._frags(size)))
+        self._enqueue_out(t, _Out(t, src, dst, kind, payload, size, on_done, self._frags(size),
+                                  valid=valid))
         return True
 
     def broadcast(self, t: float, src: int, kind: str, payload: Any, size: int,
@@ -158,7 +163,15 @@ class Network:
                 and self._channel(i, t) == ch_key]
 
     def _start_next(self, ch_key: object, ch: _Chan, t: float) -> None:
-        """Выбрать следующий пакет канала: борта с непустой очередью — по кругу."""
+        """Выбрать следующий пакет канала: борта с непустой очередью — по кругу.
+        Сообщение, ещё не начатое и устаревшее к моменту передачи (valid → False),
+        снимается с очереди без передачи."""
+        for i in self._members(ch_key, t):
+            q = self._queues.get(i)
+            while q and q[0].sent == 0 and not q[0].active and q[0].valid is not None \
+                    and not q[0].valid(t):
+                q.popleft()
+                self.msgs_dropped += 1
         cands = [i for i in self._members(ch_key, t)
                  if i in self.alive and self._queues.get(i) and not self._queues[i][0].active]
         # борт, ушедший из подгруппы или отказавший, свою очередь в этот канал не отдаёт
