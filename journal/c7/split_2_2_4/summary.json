@@ -1,0 +1,45 @@
+{
+ "scenario": "split_2_2_4",
+ "fusion.association": "rules",
+ "runs": 20,
+ "conditions": "net.bandwidth_kbps=1000; net.latency_ms=30; net.jitter_ms=10; net.loss=0.05; nav.sigma_m=10",
+ "restore_s": {
+  "median": 0.8,
+  "p95": 0.9,
+  "max": 0.9
+ },
+ "join_s": {
+  "median": 0.7,
+  "p95": 0.8,
+  "max": 1.0
+ },
+ "quantum_max_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "fix_p95_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "fix_max_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "errors_pct": {
+  "median": 0.0,
+  "p95": 4.26,
+  "max": 4.35
+ },
+ "errors_total": 6,
+ "duplicates_total": 1,
+ "mixed_objects_total": 4,
+ "absorbed_total": 1,
+ "false_objects_total": 2,
+ "truth_detected_total": 907,
+ "missing_total": 0,
+ "errors_pct_total": 0.66,
+ "all_identical": true
+}

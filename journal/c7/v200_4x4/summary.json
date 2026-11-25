@@ -1,0 +1,45 @@
+{
+ "scenario": "v200_4x4",
+ "fusion.association": "rules",
+ "runs": 20,
+ "conditions": "net.bandwidth_kbps=1000; net.latency_ms=30; net.jitter_ms=10; net.loss=0.05; nav.sigma_m=10",
+ "restore_s": {
+  "median": 0.8,
+  "p95": 1.1,
+  "max": 1.4
+ },
+ "join_s": {
+  "median": 0.9,
+  "p95": 1.2,
+  "max": 1.4
+ },
+ "quantum_max_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "fix_p95_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "fix_max_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "errors_pct": {
+  "median": 0.0,
+  "p95": 4.0,
+  "max": 10.42
+ },
+ "errors_total": 10,
+ "duplicates_total": 3,
+ "mixed_objects_total": 6,
+ "absorbed_total": 1,
+ "false_objects_total": 3,
+ "truth_detected_total": 948,
+ "missing_total": 0,
+ "errors_pct_total": 1.05,
+ "all_identical": true
+}
