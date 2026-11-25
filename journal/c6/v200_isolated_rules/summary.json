@@ -1,0 +1,41 @@
+{
+ "scenario": "v200_isolated",
+ "fusion.association": "rules",
+ "runs": 20,
+ "restore_s": {
+  "median": 1.2,
+  "p95": 1.3,
+  "max": 1.3
+ },
+ "join_s": {
+  "median": 1.0,
+  "p95": 1.3,
+  "max": 1.4
+ },
+ "quantum_max_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "settle_s": {
+  "median": 0.1,
+  "p95": 1.0,
+  "max": 1.0
+ },
+ "fix_p95_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "fix_max_s": {
+  "median": 0.2,
+  "p95": 0.2,
+  "max": 0.2
+ },
+ "all_identical": true,
+ "missing_total": 0,
+ "duplicates_total": 3,
+ "truth_detected_total": 948,
+ "mixed_objects_total": 2,
+ "false_objects_total": 2
+}
