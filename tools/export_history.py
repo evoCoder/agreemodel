@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     (out / "README.txt").write_text("\r\n".join([
         "Симулятор «Согласие» — история изменений и данные циклов разработки (прил. 10, п. 2)",
         "",
-        f"Выгрузка из репозитория evoCoder/agreemodel, состояние {head}, {datetime.now().astimezone():%d.%m.%Y %H:%M}.",
+        f"Выгрузка из репозитория evoCoder/agreemodel, состояние {head}, {datetime.now(MSK):%d.%m.%Y %H:%M} МСК.",
         f"Коммитов: {len(rows)}; первый — {first}, последний — {last}.",
         f"Ветки и метки: {', '.join(r.split('/', 2)[-1] for r in refs)}.",
         "Начало периода приёма заявок: 04.11.2026 12:00 МСК. " + (
